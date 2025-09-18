@@ -1,4 +1,4 @@
-// Floating button
+// ====== UI: floating button ======
 (function injectControl() {
   if (document.getElementById("lt-control")) return;
   const btn = document.createElement("button");
@@ -14,26 +14,24 @@
   document.documentElement.appendChild(btn);
 })();
 
-// --- Core agent ---
-async function runAgent() {
-  const log = (...a)=>console.log("[LeerTranquilo]", ...a);
-  try {
-    log("Start");
-    await autoScroll({ maxSteps: 30, stepPx: 1200, pauseMs: 500 });
-    await expandAll({ passes: 6, pauseMs: 300 });
+const LT = {
+  textRe: /(see|read|show|view)\s*more|ver\s*m[aá]s|mostrar\s*m[aá]s|leer\s*m[aá]s/i
+};
 
-    const container = findCommentsContainer();
+async function runAgent() {
+  try {
+    await autoScroll({ maxSteps: 24, stepPx: 1200, pauseMs: 400 });
+    await expandAllDeep({ passes: 8, pauseMs: 250 });
+    const container = findCommentsContainerDeep();
     if (!container) {
-      alert("No comment container found. Expansion attempted anyway.");
+      toast("No comment container found (still expanded).");
       return;
     }
-
     freeze(container);
     toast("Comments frozen ✅");
-    log("Done");
   } catch (e) {
     console.error(e);
-    toast("Error running the agent");
+    toast("Error");
   }
 }
 
@@ -46,50 +44,107 @@ function toast(msg) {
     zIndex:2147483647, fontSize:"13px"
   });
   document.body.appendChild(t);
-  setTimeout(()=>t.remove(), 2000);
+  setTimeout(()=>t.remove(), 1800);
 }
 
-// 1) Auto-scroll to load lazy comments
+// ====== Deep DOM utilities (pierce Shadow DOM & same-origin iframes) ======
+function walkDeep(root, cb) {
+  const stack = [root];
+  while (stack.length) {
+    const node = stack.pop();
+    cb(node);
+    // Shadow root
+    if (node.shadowRoot) stack.push(node.shadowRoot);
+    // Children
+    if (node.firstElementChild) {
+      let el = node.firstElementChild;
+      while (el) { stack.push(el); el = el.nextElementSibling; }
+    }
+    // Same-origin iframes
+    if (node.tagName === "IFRAME") {
+      try {
+        const doc = node.contentDocument;
+        if (doc) stack.push(doc.documentElement);
+      } catch {} // cross-origin -> ignorar
+    }
+  }
+}
+
+function closestClickable(el) {
+  return el.closest('button, a, [role="button"], [tabindex]:not([tabindex="-1"])') || el;
+}
+
+function deepQueryButtonsByText(re) {
+  const results = new Set();
+  walkDeep(document.documentElement, (node)=>{
+    if (!(node instanceof Element)) return;
+    const label = (node.innerText || node.textContent || node.getAttribute?.('aria-label') || "").trim();
+    if (!label) return;
+    if (re.test(label)) results.add(closestClickable(node));
+  });
+  return Array.from(results);
+}
+
+// ====== Actions ======
 async function autoScroll({ maxSteps=20, stepPx=1000, pauseMs=400 } = {}) {
-  let lastY = -1, stableCount = 0;
+  let lastY = -1, stable = 0;
   for (let i=0; i<maxSteps; i++) {
     window.scrollBy(0, stepPx);
     await sleep(pauseMs);
     if (window.scrollY === lastY) {
-      stableCount++;
-      if (stableCount >= 2) break;
-    } else {
-      stableCount = 0;
-      lastY = window.scrollY;
-    }
+      if (++stable >= 2) break;
+    } else { stable = 0; lastY = window.scrollY; }
   }
   window.scrollTo({ top: 0 });
 }
 
-// 2) Expand all “read more”
-async function expandAll({ passes=5, pauseMs=250 } = {}) {
+async function expandAllDeep({ passes=6, pauseMs=250 } = {}) {
   for (let p=0; p<passes; p++) {
-    const btns = getReadMoreButtons();
-    if (!btns.length) break;
-    btns.forEach(b => safeClick(b));
+    const btns = [
+      ...deepQueryButtonsByText(LT.textRe),
+      ...deepQueryAriaExpanders()
+    ];
+    if (!btns.length && p > 1) break;
+    btns.forEach(simulatedClick);
     await sleep(pauseMs);
   }
 }
 
-function getReadMoreButtons() {
-  const candidates = Array.from(document.querySelectorAll("button, a, span"))
-    .filter(el => {
-      const txt = (el.innerText || el.ariaLabel || "").trim().toLowerCase();
-      return /read more|show more|view more|see more|ver más|mostrar más|leer más/.test(txt);
-    });
-  const viafoura = Array.from(document.querySelectorAll('[class*="vf-"], [data-vf], [aria-controls*="vf-"]'))
-    .filter(el => /more|expand|toggle/i.test(el.getAttribute("aria-label") || ""));
-  return [...new Set([...candidates, ...viafoura])];
+// detecta elementos con aria que suelen togglear contenido
+function deepQueryAriaExpanders() {
+  const res = new Set();
+  walkDeep(document.documentElement, (node)=>{
+    if (!(node instanceof Element)) return;
+    const aria = node.getAttribute?.('aria-label') || "";
+    const exp = node.getAttribute?.('aria-expanded');
+    const ctrl = node.getAttribute?.('aria-controls');
+    const role = node.getAttribute?.('role') || "";
+    const label = (node.innerText || node.textContent || "").trim();
+    if (
+      /expand|more|toggle|ver m[aá]s|mostrar/i.test(aria+label) ||
+      (role === "button" && (LT.textRe.test(label) || /expand|toggle/i.test(aria)))
+    ) {
+      res.add(closestClickable(node));
+    }
+    // Viafoura suele usar clases vf-* sin texto → intentemos por data-attrs
+    if ([...node.classList||[]].some(c=>/^vf-/.test(c)) && /more|expand|toggle/i.test(aria)) {
+      res.add(closestClickable(node));
+    }
+  });
+  return Array.from(res);
 }
 
-function safeClick(el) { try { el.click(); } catch {} }
+function simulatedClick(el) {
+  try {
+    el.dispatchEvent(new MouseEvent('pointerdown', {bubbles:true}));
+    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+    el.click();
+    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
+    el.dispatchEvent(new MouseEvent('pointerup', {bubbles:true}));
+  } catch {}
+}
 
-// 3) Freeze: clone and replace
+// ====== Freeze ======
 function freeze(container) {
   const clone = container.cloneNode(true);
   clone.querySelectorAll("button, a, input, textarea, select").forEach(el => {
@@ -101,9 +156,7 @@ function freeze(container) {
   frozen.style.opacity = "0.9999";
   frozen.appendChild(clone);
   container.replaceWith(frozen);
-  try {
-    frozen.querySelectorAll("iframe").forEach(ifr => ifr.remove());
-  } catch {}
+  try { frozen.querySelectorAll("iframe").forEach(ifr => ifr.remove()); } catch {}
 }
 
 function staticNode(el) {
@@ -113,21 +166,27 @@ function staticNode(el) {
   return span;
 }
 
-function findCommentsContainer() {
-  const selectors = [
+function findCommentsContainerDeep() {
+  const sels = [
     '[id*="comment"], [class*="comment"]',
     '[class*="vf-comments"], [data-vf-widget-type="comments"]',
     '[id*="coral"], [class*="coral"]',
-    '#disqus_thread',
+    '#disqus_thread'
   ];
-  for (const sel of selectors) {
-    const el = document.querySelector(sel);
+  for (const sel of sels) {
+    const el = deepQuerySelector(sel);
     if (el) return el;
   }
-  const blocks = Array.from(document.querySelectorAll("section, div"))
-    .filter(d => d.querySelectorAll("p").length > 10)
-    .sort((a,b)=> b.querySelectorAll("p").length - a.querySelectorAll("p").length);
-  return blocks[0] || null;
+  return null;
+}
+
+function deepQuerySelector(selector) {
+  let found = null;
+  walkDeep(document.documentElement, (node)=>{
+    if (found) return;
+    if (node instanceof Element && node.matches?.(selector)) found = node;
+  });
+  return found;
 }
 
 function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
