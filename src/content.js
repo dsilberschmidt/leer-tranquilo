@@ -1,13 +1,13 @@
-// ====== Leer Tranquilo - content.js ======
-const LT_VERSION = '0.1.3';
+/* ====== Leer Tranquilo - content.js (lockdown) ====== */
+const LT_VERSION = '0.1.4';
 console.log('[LT] content loaded v', LT_VERSION);
 
-// ====== UI: floating button (force new ID/version) ======
+/* ====== UI: floating button (force new ID/version) ====== */
 (function injectControl() {
-  const OLD = document.getElementById("lt-control-v013");
-  if (OLD) OLD.remove(); // quita botones antiguos
+  const OLD = document.getElementById("lt-control-v014");
+  if (OLD) OLD.remove();
   const btn = document.createElement("button");
-  btn.id = "lt-control-v013";
+  btn.id = "lt-control-v014";
   btn.textContent = `Expand & Freeze (v${LT_VERSION})`;
   Object.assign(btn.style, {
     position: "fixed", inset: "auto 16px 16px auto", zIndex: 2147483647,
@@ -26,17 +26,33 @@ const LT = {
   spotAttr: '[data-spot-im-class],[data-ow-class],[data-openweb-class]'
 };
 
+let LT_LOCK_OBSERVER = null;
+let LT_FROZEN_ANCHOR = null;
+
 async function runAgent() {
   try {
     await autoScroll({ maxSteps: 24, stepPx: 1200, pauseMs: 400 });
     await expandAllDeep({ passes: 10, pauseMs: 280 });
+
+    // Heurística: contenedor de comentarios
     const container = findCommentsContainerDeep();
     if (!container) {
       toast("No comment container found (still expanded).");
       return;
     }
-    freeze(container);
-    toast("Comments frozen ✅");
+
+    // Congelar
+    const frozen = freeze(container);
+
+    // Lockdown: ocultar reapariciones del widget y forzar estilos anti-colapso
+    lockdown({ targetFrozen: frozen, killSelectors: [
+      LT.spotAttr,
+      'iframe[src*="spot.im"]',
+      'iframe[src*="openweb"]',
+      'iframe[src*="viafoura"]'
+    ]});
+
+    toast("Comments frozen & locked ✅");
   } catch (e) {
     console.error(e);
     toast("Error");
@@ -55,7 +71,7 @@ function toast(msg) {
   setTimeout(()=>t.remove(), 1800);
 }
 
-// ====== Deep DOM utilities (pierce Shadow DOM & same-origin iframes) ======
+/* ====== Deep DOM utilities (Shadow DOM & same-origin iframes) ====== */
 function walkDeep(root, cb) {
   const stack = [root];
   while (stack.length) {
@@ -99,7 +115,7 @@ function deepQueryButtonsByText(re) {
   return Array.from(results);
 }
 
-// ====== Actions ======
+/* ====== Actions ====== */
 async function autoScroll({ maxSteps=20, stepPx=1000, pauseMs=400 } = {}) {
   let lastY = -1, stable = 0;
   for (let i=0; i<maxSteps; i++) {
@@ -169,19 +185,75 @@ function simulatedClick(el) {
   } catch {}
 }
 
-// ====== Freeze ======
+/* ====== Freeze & Lockdown ====== */
 function freeze(container) {
+  // Guardamos un ancla para reinsertar si el widget reaparece
+  LT_FROZEN_ANCHOR = document.createElement('div');
+  LT_FROZEN_ANCHOR.id = 'lt-anchor';
+  container.parentNode.insertBefore(LT_FROZEN_ANCHOR, container);
+
   const clone = container.cloneNode(true);
+
+  // Fuerza anti-colapso genérico
+  const style = document.createElement('style');
+  style.textContent = `
+    /* eliminar truncados comunes */
+    [style*="line-clamp"], [style*="-webkit-line-clamp"] { -webkit-line-clamp: unset !important; }
+    .line-clamp, .clamped, [class*="Clamp"] { -webkit-line-clamp: unset !important; max-height: none !important; overflow: visible !important; }
+    [class*="truncate"], [class*="collapsed"], [class*="collapsedText"] { max-height: none !important; overflow: visible !important; }
+  `;
+  clone.prepend(style);
+
+  // Neutraliza elementos interactivos:
   clone.querySelectorAll("button, a, input, textarea, select").forEach(el => {
     el.replaceWith(staticNode(el));
   });
+
   const frozen = document.createElement("div");
   frozen.id = "lt-frozen";
   frozen.setAttribute("inert", "");
   frozen.style.opacity = "0.9999";
   frozen.appendChild(clone);
+
+  // Reemplaza contenedor vivo por copia estática
   container.replaceWith(frozen);
+
+  // Limpieza básica
   try { frozen.querySelectorAll("iframe").forEach(ifr => ifr.remove()); } catch {}
+
+  return frozen;
+}
+
+function lockdown({ targetFrozen, killSelectors = [] } = {}) {
+  // Oculta cualquier reinserción del widget y asegura que nuestro frozen siga visible
+  const killerStyle = document.createElement('style');
+  killerStyle.id = 'lt-lockdown-style';
+  killerStyle.textContent = `
+    ${killSelectors.join(',')} { display: none !important; visibility: hidden !important; }
+  `;
+  document.documentElement.appendChild(killerStyle);
+
+  if (LT_LOCK_OBSERVER) {
+    try { LT_LOCK_OBSERVER.disconnect(); } catch {}
+  }
+  LT_LOCK_OBSERVER = new MutationObserver((muts)=>{
+    for (const m of muts) {
+      m.addedNodes?.forEach(node=>{
+        if (!(node instanceof Element)) return;
+        // Si el widget reaparece, lo ocultamos
+        if (killSelectors.some(sel => node.matches?.(sel) || node.querySelector?.(sel))) {
+          node.style.display = 'none';
+          node.style.visibility = 'hidden';
+        }
+      });
+    }
+    // Asegura que el frozen siga en su lugar
+    if (!document.getElementById('lt-frozen') && LT_FROZEN_ANCHOR) {
+      const orphan = targetFrozen;
+      try { LT_FROZEN_ANCHOR.after(orphan); } catch {}
+    }
+  });
+  LT_LOCK_OBSERVER.observe(document.body || document.documentElement, { childList: true, subtree: true });
 }
 
 function staticNode(el) {
