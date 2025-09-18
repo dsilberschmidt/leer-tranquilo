@@ -15,13 +15,14 @@
 })();
 
 const LT = {
-  textRe: /(see|read|show|view)\s*more|ver\s*m[aá]s|mostrar\s*m[aá]s|leer\s*m[aá]s/i
+  textRe: /(see|read|show|view)\s*more|ver\s*m[aá]s|mostrar\s*m[aá]s|leer\s*m[aá]s/i,
+  spotAttr: '[data-spot-im-class],[data-ow-class],[data-openweb-class]' // Spot.IM / OpenWeb
 };
 
 async function runAgent() {
   try {
     await autoScroll({ maxSteps: 24, stepPx: 1200, pauseMs: 400 });
-    await expandAllDeep({ passes: 8, pauseMs: 250 });
+    await expandAllDeep({ passes: 10, pauseMs: 280 });
     const container = findCommentsContainerDeep();
     if (!container) {
       toast("No comment container found (still expanded).");
@@ -74,6 +75,15 @@ function closestClickable(el) {
   return el.closest('button, a, [role="button"], [tabindex]:not([tabindex="-1"])') || el;
 }
 
+function deepQuery(selector, limit = Infinity) {
+  const out = [];
+  walkDeep(document.documentElement, (n)=>{
+    if (out.length >= limit) return;
+    if (n instanceof Element && n.matches?.(selector)) out.push(n);
+  });
+  return out;
+}
+
 function deepQueryButtonsByText(re) {
   const results = new Set();
   walkDeep(document.documentElement, (node)=>{
@@ -102,32 +112,48 @@ async function expandAllDeep({ passes=6, pauseMs=250 } = {}) {
   for (let p=0; p<passes; p++) {
     const btns = [
       ...deepQueryButtonsByText(LT.textRe),
-      ...deepQueryAriaExpanders()
+      ...deepSpotImExpanders(),
+      ...deepGenericExpanders()
     ];
-    if (!btns.length && p > 1) break;
-    btns.forEach(simulatedClick);
+    const unique = [...new Set(btns)].filter(Boolean);
+    if (!unique.length && p > 1) break;
+    unique.forEach(simulatedClick);
     await sleep(pauseMs);
   }
 }
 
-// detecta elementos con aria que suelen togglear contenido
-function deepQueryAriaExpanders() {
+// Heurísticas específicas Spot.IM / OpenWeb
+function deepSpotImExpanders() {
+  const res = new Set();
+  // nodos con atributos Spot.IM
+  const nodes = deepQuery(LT.spotAttr);
+  for (const n of nodes) {
+    if (!(n instanceof Element)) continue;
+    const txt = (n.innerText || n.textContent || n.getAttribute('aria-label') || "").trim();
+    const role = n.getAttribute('role') || "";
+    // Botones “See more” con data-spot-im-class o role button
+    if (LT.textRe.test(txt) || /expand|toggle|more/i.test(n.getAttribute('aria-label')||"")) {
+      res.add(closestClickable(n));
+    }
+    if (role === "button" && /more|expand/i.test(txt)) {
+      res.add(n);
+    }
+  }
+  // algunos usan clases utilitarias
+  const classBtns = deepQuery('[class*="ReadMore"],[class*="readMore"],[class*="ShowMore"],[class*="seeMore"],[class*="moreButton"]');
+  classBtns.forEach(el => res.add(closestClickable(el)));
+  return Array.from(res);
+}
+
+// Genérico por aria/roles
+function deepGenericExpanders() {
   const res = new Set();
   walkDeep(document.documentElement, (node)=>{
     if (!(node instanceof Element)) return;
     const aria = node.getAttribute?.('aria-label') || "";
-    const exp = node.getAttribute?.('aria-expanded');
-    const ctrl = node.getAttribute?.('aria-controls');
     const role = node.getAttribute?.('role') || "";
     const label = (node.innerText || node.textContent || "").trim();
-    if (
-      /expand|more|toggle|ver m[aá]s|mostrar/i.test(aria+label) ||
-      (role === "button" && (LT.textRe.test(label) || /expand|toggle/i.test(aria)))
-    ) {
-      res.add(closestClickable(node));
-    }
-    // Viafoura suele usar clases vf-* sin texto → intentemos por data-attrs
-    if ([...node.classList||[]].some(c=>/^vf-/.test(c)) && /more|expand|toggle/i.test(aria)) {
+    if (role === "button" && (LT.textRe.test(label) || /expand|toggle/i.test(aria))) {
       res.add(closestClickable(node));
     }
   });
@@ -168,25 +194,19 @@ function staticNode(el) {
 
 function findCommentsContainerDeep() {
   const sels = [
+    // genéricos
     '[id*="comment"], [class*="comment"]',
-    '[class*="vf-comments"], [data-vf-widget-type="comments"]',
+    // Spot.IM / OpenWeb a veces marca el contenedor con data-spot-im-class en ancestros
+    `${LT.spotAttr}`,
+    // Coral / Disqus por si acaso
     '[id*="coral"], [class*="coral"]',
     '#disqus_thread'
   ];
   for (const sel of sels) {
-    const el = deepQuerySelector(sel);
+    const el = deepQuery(sel, 1)[0];
     if (el) return el;
   }
   return null;
-}
-
-function deepQuerySelector(selector) {
-  let found = null;
-  walkDeep(document.documentElement, (node)=>{
-    if (found) return;
-    if (node instanceof Element && node.matches?.(selector)) found = node;
-  });
-  return found;
 }
 
 function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
