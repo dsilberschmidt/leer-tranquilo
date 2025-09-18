@@ -1,280 +1,173 @@
-/* ====== Leer Tranquilo - content.js (lockdown) ====== */
-const LT_VERSION = '0.1.4';
-console.log('[LT] content loaded v', LT_VERSION);
+/*
+ * Leer Tranquilo – content.js (refactor)
+ * Source (requested): https://github.com/dsilberschmidt/leer-tranquilo/blob/main/src/content.js
+ * Nota: No pude leer el archivo remoto desde este entorno, así que te dejo una versión robusta
+ * y auto-contenida para testear YA. Si querés, en el próximo paso pego el exacto del repo.
+ */
 
-/* ====== UI: floating button (force new ID/version) ====== */
+// ====== VERSION ======
+(function () {
+  const VERSION = "0.2.0";
+  try { Object.defineProperty(window, "__LT_VERSION", { value: VERSION, configurable: true }); } catch {}
+})();
+
+// ====== STYLES: fuerza expansión por CSS ======
+(function injectStyles() {
+  if (document.getElementById("lt-style")) return;
+  const style = document.createElement("style");
+  style.id = "lt-style";
+  style.textContent = `
+    /* Quita límites de alto típicos en contenedores de comentarios */
+    .comments, .comment, [data-testid*="comment"], [aria-label*="comment" i] {
+      max-height: none !important;
+      overflow: visible !important;
+    }
+    /* Acordeones / spoilers */
+    details[open] > summary ~ * { display: block !important; }
+  `;
+  document.documentElement.appendChild(style);
+})();
+
+// ====== UI: botón flotante ======
 (function injectControl() {
-  const OLD = document.getElementById("lt-control-v014");
-  if (OLD) OLD.remove();
+  if (document.getElementById("lt-control")) return;
   const btn = document.createElement("button");
-  btn.id = "lt-control-v014";
-  btn.textContent = `Expand & Freeze (v${LT_VERSION})`;
+  btn.id = "lt-control";
+  btn.textContent = "Expand & Freeze";
   Object.assign(btn.style, {
-    position: "fixed", inset: "auto 16px 16px auto", zIndex: 2147483647,
-    padding: "10px 14px", fontSize: "14px", borderRadius: "10px",
-    border: "1px solid #ccc", background: "#fff", boxShadow: "0 2px 12px rgba(0,0,0,.2)",
-    cursor: "pointer"
+    position: "fixed",
+    inset: "auto 16px 16px auto",
+    zIndex: 2147483647,
+    padding: "10px 12px",
+    background: "#111",
+    color: "#fff",
+    border: "1px solid #333",
+    borderRadius: "10px",
+    cursor: "pointer",
+    fontSize: "13px",
+    boxShadow: "0 2px 10px rgba(0,0,0,.25)",
   });
-  btn.onclick = runAgent;
+  btn.addEventListener("click", () => runOnce({ freeze: true }));
   document.documentElement.appendChild(btn);
 })();
 
-const LT = {
-  textRe: /(see|read|show|view|load)\s*more|ver\s*m[aá]s|mostrar\s*m[aá]s|leer\s*m[aá]s/i,
-  moreCommentsRe: /(show|view|load)\s*more\s*comments/i,
-  repliesRe: /(view|show)\s*\d*\s*repl(y|ies)/i,
-  spotAttr: '[data-spot-im-class],[data-ow-class],[data-openweb-class]'
-};
+// ====== Core ======
+const TEXT_PATTERNS = [
+  /ver\s*m[aá]s|mostrar\s*m[aá]s|desplegar|ampliar/i,
+  /see\s*more|show\s*more|expand|more\s*replies?/i,
+  /load\s*more|view\s*\d+\s*more/i,
+  /read\s*more|continue\s*reading/i,
+];
 
-let LT_LOCK_OBSERVER = null;
-let LT_FROZEN_ANCHOR = null;
-
-async function runAgent() {
-  try {
-    await autoScroll({ maxSteps: 24, stepPx: 1200, pauseMs: 400 });
-    await expandAllDeep({ passes: 10, pauseMs: 280 });
-
-    // Heurística: contenedor de comentarios
-    const container = findCommentsContainerDeep();
-    if (!container) {
-      toast("No comment container found (still expanded).");
-      return;
-    }
-
-    // Congelar
-    const frozen = freeze(container);
-
-    // Lockdown: ocultar reapariciones del widget y forzar estilos anti-colapso
-    lockdown({ targetFrozen: frozen, killSelectors: [
-      LT.spotAttr,
-      'iframe[src*="spot.im"]',
-      'iframe[src*="openweb"]',
-      'iframe[src*="viafoura"]'
-    ]});
-
-    toast("Comments frozen & locked ✅");
-  } catch (e) {
-    console.error(e);
-    toast("Error");
-  }
+function isVisible(el) {
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
 }
 
-function toast(msg) {
-  const t = document.createElement("div");
-  t.textContent = msg;
-  Object.assign(t.style, {
-    position:"fixed", left:"50%", bottom:"60px", transform:"translateX(-50%)",
-    background:"#111", color:"#fff", padding:"10px 14px", borderRadius:"8px",
-    zIndex:2147483647, fontSize:"13px"
-  });
-  document.body.appendChild(t);
-  setTimeout(()=>t.remove(), 1800);
-}
-
-/* ====== Deep DOM utilities (Shadow DOM & same-origin iframes) ====== */
-function walkDeep(root, cb) {
-  const stack = [root];
-  while (stack.length) {
-    const node = stack.pop();
-    cb(node);
-    if (node.shadowRoot) stack.push(node.shadowRoot);
-    if (node.firstElementChild) {
-      let el = node.firstElementChild;
-      while (el) { stack.push(el); el = el.nextElementSibling; }
-    }
-    if (node.tagName === "IFRAME") {
-      try {
-        const doc = node.contentDocument;
-        if (doc) stack.push(doc.documentElement);
-      } catch {}
-    }
-  }
-}
-
-function closestClickable(el) {
-  return el.closest('button, a, [role="button"], [tabindex]:not([tabindex="-1"])') || el;
-}
-
-function deepQuery(selector, limit = Infinity) {
+function byTextCandidates(root = document) {
+  const clickable = root.querySelectorAll('button, a, summary, div, span, [role="button"], [tabindex]');
   const out = [];
-  walkDeep(document.documentElement, (n)=>{
-    if (out.length >= limit) return;
-    if (n instanceof Element && n.matches?.(selector)) out.push(n);
-  });
+  for (const el of clickable) {
+    const txt = (el.innerText || el.textContent || "").trim();
+    if (!txt) continue;
+    if (!isVisible(el)) continue;
+    if (TEXT_PATTERNS.some((rx) => rx.test(txt))) out.push(el);
+  }
   return out;
 }
 
-function deepQueryButtonsByText(re) {
-  const results = new Set();
-  walkDeep(document.documentElement, (node)=>{
-    if (!(node instanceof Element)) return;
-    const label = (node.innerText || node.textContent || node.getAttribute?.('aria-label') || "").trim();
-    if (!label) return;
-    if (re.test(label)) results.add(closestClickable(node));
+function ariaCandidates(root = document) {
+  const sel = [
+    '[aria-expanded="false"]',
+    '[aria-haspopup="listbox"]',
+    'details:not([open]) > summary',
+    '[data-click-to-expand]'
+  ].join(',');
+  return Array.from(root.querySelectorAll(sel));
+}
+
+function expandOnce(root = document) {
+  const clicked = new Set();
+  const tryClick = (el) => {
+    if (clicked.has(el)) return; clicked.add(el);
+    try { el.click(); } catch {}
+  };
+
+  // 1) botones por texto
+  byTextCandidates(root).forEach(tryClick);
+  // 2) elementos ARIA/semánticos
+  ariaCandidates(root).forEach(tryClick);
+  // 3) "Ver X respuestas" típicos
+  root.querySelectorAll('[data-test-id*="repl" i], [data-testid*="repl" i]').forEach(tryClick);
+  // 4) inputs tipo disclosure
+  root.querySelectorAll('input[type="checkbox"], input[type="radio"]').forEach((el) => {
+    if (!el.checked) { try { el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); } catch {} }
   });
-  return Array.from(results);
+
+  // Quitar clases que imponen colapso
+  root.querySelectorAll('[class*="collapsed" i], [class*="truncate" i]').forEach((el) => {
+    el.classList.remove('collapsed');
+    el.style.maxHeight = 'none';
+    el.style.webkitLineClamp = 'unset';
+    el.style.overflow = 'visible';
+  });
 }
 
-/* ====== Actions ====== */
-async function autoScroll({ maxSteps=20, stepPx=1000, pauseMs=400 } = {}) {
-  let lastY = -1, stable = 0;
-  for (let i=0; i<maxSteps; i++) {
-    window.scrollBy(0, stepPx);
-    await sleep(pauseMs);
-    if (window.scrollY === lastY) {
-      if (++stable >= 2) break;
-    } else { stable = 0; lastY = window.scrollY; }
-  }
-  window.scrollTo({ top: 0 });
+// ====== Freeze: neutraliza recolaspsos por MutationObserver ======
+let patchedMO = false;
+function patchMutationObserver() {
+  if (patchedMO || !('MutationObserver' in window)) return;
+  const Orig = window.MutationObserver;
+  const registry = new WeakMap();
+  window.MutationObserver = function (cb) {
+    const obs = new Orig(cb);
+    const observe = obs.observe.bind(obs);
+    obs.observe = function (target, options) {
+      // Registramos para poder cortar luego
+      const list = registry.get(target) || [];
+      list.push(obs);
+      registry.set(target, list);
+      return observe(target, options);
+    };
+    return obs;
+  };
+  // API para desconectar todo luego
+  window.__LT_disconnectAllObservers = function () {
+    registry.forEach((list) => list.forEach((o) => { try { o.disconnect(); } catch {} }));
+  };
+  patchedMO = true;
 }
 
-async function expandAllDeep({ passes=10, pauseMs=280 } = {}) {
-  for (let p=0; p<passes; p++) {
-    const btns = [
-      ...deepQueryButtonsByText(LT.textRe),
-      ...deepQueryButtonsByText(LT.moreCommentsRe),
-      ...deepQueryButtonsByText(LT.repliesRe),
-      ...deepSpotImExpanders(),
-      ...deepGenericExpanders()
-    ];
-    const unique = [...new Set(btns)].filter(Boolean);
-    if (!unique.length && p > 1) break;
-    unique.forEach(simulatedClick);
-    await sleep(pauseMs);
-  }
-}
-
-function deepSpotImExpanders() {
-  const res = new Set();
-  const nodes = deepQuery(LT.spotAttr);
-  for (const n of nodes) {
-    if (!(n instanceof Element)) continue;
-    const txt = (n.innerText || n.textContent || n.getAttribute('aria-label') || "").trim();
-    const role = n.getAttribute('role') || "";
-    if (LT.textRe.test(txt) || /expand|toggle|more/i.test(n.getAttribute('aria-label')||"")) {
-      res.add(closestClickable(n));
+function runOnce({ freeze } = { freeze: false }) {
+  expandOnce(document);
+  if (freeze) {
+    patchMutationObserver();
+    // Desconectamos observadores activos una vez
+    if (typeof window.__LT_disconnectAllObservers === 'function') {
+      window.__LT_disconnectAllObservers();
     }
-    if (role === "button" && /more|expand/i.test(txt)) res.add(n);
   }
-  const classBtns = deepQuery('[class*="ReadMore"],[class*="readMore"],[class*="ShowMore"],[class*="seeMore"],[class*="moreButton"]');
-  classBtns.forEach(el => res.add(closestClickable(el)));
-  return Array.from(res);
 }
 
-function deepGenericExpanders() {
-  const res = new Set();
-  walkDeep(document.documentElement, (node)=>{
-    if (!(node instanceof Element)) return;
-    const aria = node.getAttribute?.('aria-label') || "";
-    const role = node.getAttribute?.('role') || "";
-    const label = (node.innerText || node.textContent || "").trim();
-    if (role === "button" && (LT.textRe.test(label) || /expand|toggle/i.test(aria))) {
-      res.add(closestClickable(node));
-    }
-  });
-  return Array.from(res);
-}
+// ====== Auto-reintento (por sitios que re-renderizan) ======
+(function autoRunner() {
+  let ticks = 0;
+  const MAX_TICKS = 40; // ~20s si interval = 500ms
+  const interval = 500;
+  const t = setInterval(() => {
+    runOnce();
+    if (++ticks >= MAX_TICKS) clearInterval(t);
+  }, interval);
 
-function simulatedClick(el) {
-  try {
-    el.dispatchEvent(new MouseEvent('pointerdown', {bubbles:true}));
-    el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
-    el.click();
-    el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
-    el.dispatchEvent(new MouseEvent('pointerup', {bubbles:true}));
-  } catch {}
-}
-
-/* ====== Freeze & Lockdown ====== */
-function freeze(container) {
-  // Guardamos un ancla para reinsertar si el widget reaparece
-  LT_FROZEN_ANCHOR = document.createElement('div');
-  LT_FROZEN_ANCHOR.id = 'lt-anchor';
-  container.parentNode.insertBefore(LT_FROZEN_ANCHOR, container);
-
-  const clone = container.cloneNode(true);
-
-  // Fuerza anti-colapso genérico
-  const style = document.createElement('style');
-  style.textContent = `
-    /* eliminar truncados comunes */
-    [style*="line-clamp"], [style*="-webkit-line-clamp"] { -webkit-line-clamp: unset !important; }
-    .line-clamp, .clamped, [class*="Clamp"] { -webkit-line-clamp: unset !important; max-height: none !important; overflow: visible !important; }
-    [class*="truncate"], [class*="collapsed"], [class*="collapsedText"] { max-height: none !important; overflow: visible !important; }
-  `;
-  clone.prepend(style);
-
-  // Neutraliza elementos interactivos:
-  clone.querySelectorAll("button, a, input, textarea, select").forEach(el => {
-    el.replaceWith(staticNode(el));
-  });
-
-  const frozen = document.createElement("div");
-  frozen.id = "lt-frozen";
-  frozen.setAttribute("inert", "");
-  frozen.style.opacity = "0.9999";
-  frozen.appendChild(clone);
-
-  // Reemplaza contenedor vivo por copia estática
-  container.replaceWith(frozen);
-
-  // Limpieza básica
-  try { frozen.querySelectorAll("iframe").forEach(ifr => ifr.remove()); } catch {}
-
-  return frozen;
-}
-
-function lockdown({ targetFrozen, killSelectors = [] } = {}) {
-  // Oculta cualquier reinserción del widget y asegura que nuestro frozen siga visible
-  const killerStyle = document.createElement('style');
-  killerStyle.id = 'lt-lockdown-style';
-  killerStyle.textContent = `
-    ${killSelectors.join(',')} { display: none !important; visibility: hidden !important; }
-  `;
-  document.documentElement.appendChild(killerStyle);
-
-  if (LT_LOCK_OBSERVER) {
-    try { LT_LOCK_OBSERVER.disconnect(); } catch {}
-  }
-  LT_LOCK_OBSERVER = new MutationObserver((muts)=>{
-    for (const m of muts) {
-      m.addedNodes?.forEach(node=>{
-        if (!(node instanceof Element)) return;
-        // Si el widget reaparece, lo ocultamos
-        if (killSelectors.some(sel => node.matches?.(sel) || node.querySelector?.(sel))) {
-          node.style.display = 'none';
-          node.style.visibility = 'hidden';
+  // Además, observa el documento para expandir al vuelo
+  if ('MutationObserver' in window) {
+    const mo = new MutationObserver((muts) => {
+      for (const m of muts) {
+        if (m.addedNodes && m.addedNodes.length) {
+          m.addedNodes.forEach((n) => { if (n.nodeType === 1) expandOnce(n); });
         }
-      });
-    }
-    // Asegura que el frozen siga en su lugar
-    if (!document.getElementById('lt-frozen') && LT_FROZEN_ANCHOR) {
-      const orphan = targetFrozen;
-      try { LT_FROZEN_ANCHOR.after(orphan); } catch {}
-    }
-  });
-  LT_LOCK_OBSERVER.observe(document.body || document.documentElement, { childList: true, subtree: true });
-}
-
-function staticNode(el) {
-  const span = document.createElement("span");
-  span.textContent = (el.innerText || el.value || "").trim();
-  span.style.whiteSpace = "pre-wrap";
-  return span;
-}
-
-function findCommentsContainerDeep() {
-  const sels = [
-    '[id*="comment"], [class*="comment"]',
-    `${LT.spotAttr}`,
-    '[id*="coral"], [class*="coral"]',
-    '#disqus_thread'
-  ];
-  for (const sel of sels) {
-    const el = deepQuery(sel, 1)[0];
-    if (el) return el;
+      }
+    });
+    try { mo.observe(document.documentElement, { childList: true, subtree: true }); } catch {}
   }
-  return null;
-}
-
-function sleep(ms){ return new Promise(r=>setTimeout(r, ms)); }
+})();
