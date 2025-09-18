@@ -1,13 +1,14 @@
 // ====== Leer Tranquilo - content.js ======
-window.__LT_VERSION = '0.1.3';
-console.log('[LT] version', window.__LT_VERSION);
+const LT_VERSION = '0.1.3';
+console.log('[LT] content loaded v', LT_VERSION);
 
-// ====== UI: floating button ======
+// ====== UI: floating button (force new ID/version) ======
 (function injectControl() {
-  if (document.getElementById("lt-control")) return;
+  const OLD = document.getElementById("lt-control-v013");
+  if (OLD) OLD.remove(); // quita botones antiguos
   const btn = document.createElement("button");
-  btn.id = "lt-control";
-  btn.textContent = "Expand & Freeze";
+  btn.id = "lt-control-v013";
+  btn.textContent = `Expand & Freeze (v${LT_VERSION})`;
   Object.assign(btn.style, {
     position: "fixed", inset: "auto 16px 16px auto", zIndex: 2147483647,
     padding: "10px 14px", fontSize: "14px", borderRadius: "10px",
@@ -19,13 +20,9 @@ console.log('[LT] version', window.__LT_VERSION);
 })();
 
 const LT = {
-  // "See more" / "Read more" dentro del comentario
   textRe: /(see|read|show|view|load)\s*more|ver\s*m[aá]s|mostrar\s*m[aá]s|leer\s*m[aá]s/i,
-  // Botón rojo "Show More Comments"
   moreCommentsRe: /(show|view|load)\s*more\s*comments/i,
-  // "1 reply", "View replies"
   repliesRe: /(view|show)\s*\d*\s*repl(y|ies)/i,
-  // Spot.IM / OpenWeb
   spotAttr: '[data-spot-im-class],[data-ow-class],[data-openweb-class]'
 };
 
@@ -64,19 +61,16 @@ function walkDeep(root, cb) {
   while (stack.length) {
     const node = stack.pop();
     cb(node);
-    // Shadow root
     if (node.shadowRoot) stack.push(node.shadowRoot);
-    // Children
     if (node.firstElementChild) {
       let el = node.firstElementChild;
       while (el) { stack.push(el); el = el.nextElementSibling; }
     }
-    // Same-origin iframes
     if (node.tagName === "IFRAME") {
       try {
         const doc = node.contentDocument;
         if (doc) stack.push(doc.documentElement);
-      } catch {} // cross-origin -> ignorar
+      } catch {}
     }
   }
 }
@@ -121,13 +115,9 @@ async function autoScroll({ maxSteps=20, stepPx=1000, pauseMs=400 } = {}) {
 async function expandAllDeep({ passes=10, pauseMs=280 } = {}) {
   for (let p=0; p<passes; p++) {
     const btns = [
-      // “See more”/“Read more” en texto o aria
       ...deepQueryButtonsByText(LT.textRe),
-      // Botón rojo “Show More Comments”
       ...deepQueryButtonsByText(LT.moreCommentsRe),
-      // “1 reply” / “View replies”
       ...deepQueryButtonsByText(LT.repliesRe),
-      // Heurísticas Spot.IM / OpenWeb y genéricas
       ...deepSpotImExpanders(),
       ...deepGenericExpanders()
     ];
@@ -138,7 +128,6 @@ async function expandAllDeep({ passes=10, pauseMs=280 } = {}) {
   }
 }
 
-// Heurísticas específicas Spot.IM / OpenWeb
 function deepSpotImExpanders() {
   const res = new Set();
   const nodes = deepQuery(LT.spotAttr);
@@ -156,7 +145,6 @@ function deepSpotImExpanders() {
   return Array.from(res);
 }
 
-// Genérico por aria/roles
 function deepGenericExpanders() {
   const res = new Set();
   walkDeep(document.documentElement, (node)=>{
