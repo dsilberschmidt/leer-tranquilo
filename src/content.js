@@ -1,3 +1,7 @@
+// ====== Leer Tranquilo - content.js ======
+window.__LT_VERSION = '0.1.3';
+console.log('[LT] version', window.__LT_VERSION);
+
 // ====== UI: floating button ======
 (function injectControl() {
   if (document.getElementById("lt-control")) return;
@@ -15,8 +19,14 @@
 })();
 
 const LT = {
-  textRe: /(see|read|show|view)\s*more|ver\s*m[aá]s|mostrar\s*m[aá]s|leer\s*m[aá]s/i,
-  spotAttr: '[data-spot-im-class],[data-ow-class],[data-openweb-class]' // Spot.IM / OpenWeb
+  // "See more" / "Read more" dentro del comentario
+  textRe: /(see|read|show|view|load)\s*more|ver\s*m[aá]s|mostrar\s*m[aá]s|leer\s*m[aá]s/i,
+  // Botón rojo "Show More Comments"
+  moreCommentsRe: /(show|view|load)\s*more\s*comments/i,
+  // "1 reply", "View replies"
+  repliesRe: /(view|show)\s*\d*\s*repl(y|ies)/i,
+  // Spot.IM / OpenWeb
+  spotAttr: '[data-spot-im-class],[data-ow-class],[data-openweb-class]'
 };
 
 async function runAgent() {
@@ -108,10 +118,16 @@ async function autoScroll({ maxSteps=20, stepPx=1000, pauseMs=400 } = {}) {
   window.scrollTo({ top: 0 });
 }
 
-async function expandAllDeep({ passes=6, pauseMs=250 } = {}) {
+async function expandAllDeep({ passes=10, pauseMs=280 } = {}) {
   for (let p=0; p<passes; p++) {
     const btns = [
+      // “See more”/“Read more” en texto o aria
       ...deepQueryButtonsByText(LT.textRe),
+      // Botón rojo “Show More Comments”
+      ...deepQueryButtonsByText(LT.moreCommentsRe),
+      // “1 reply” / “View replies”
+      ...deepQueryButtonsByText(LT.repliesRe),
+      // Heurísticas Spot.IM / OpenWeb y genéricas
       ...deepSpotImExpanders(),
       ...deepGenericExpanders()
     ];
@@ -125,21 +141,16 @@ async function expandAllDeep({ passes=6, pauseMs=250 } = {}) {
 // Heurísticas específicas Spot.IM / OpenWeb
 function deepSpotImExpanders() {
   const res = new Set();
-  // nodos con atributos Spot.IM
   const nodes = deepQuery(LT.spotAttr);
   for (const n of nodes) {
     if (!(n instanceof Element)) continue;
     const txt = (n.innerText || n.textContent || n.getAttribute('aria-label') || "").trim();
     const role = n.getAttribute('role') || "";
-    // Botones “See more” con data-spot-im-class o role button
     if (LT.textRe.test(txt) || /expand|toggle|more/i.test(n.getAttribute('aria-label')||"")) {
       res.add(closestClickable(n));
     }
-    if (role === "button" && /more|expand/i.test(txt)) {
-      res.add(n);
-    }
+    if (role === "button" && /more|expand/i.test(txt)) res.add(n);
   }
-  // algunos usan clases utilitarias
   const classBtns = deepQuery('[class*="ReadMore"],[class*="readMore"],[class*="ShowMore"],[class*="seeMore"],[class*="moreButton"]');
   classBtns.forEach(el => res.add(closestClickable(el)));
   return Array.from(res);
@@ -194,11 +205,8 @@ function staticNode(el) {
 
 function findCommentsContainerDeep() {
   const sels = [
-    // genéricos
     '[id*="comment"], [class*="comment"]',
-    // Spot.IM / OpenWeb a veces marca el contenedor con data-spot-im-class en ancestros
     `${LT.spotAttr}`,
-    // Coral / Disqus por si acaso
     '[id*="coral"], [class*="coral"]',
     '#disqus_thread'
   ];
