@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Leer Tranquilo",
+  "version": "0.1.0",
+  "description": "A reading agent that expands all hidden comments and freezes the section to prevent reloads or reordering.",
+  "permissions": ["scripting", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
