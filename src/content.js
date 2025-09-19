@@ -1,17 +1,17 @@
 /*
  * Leer Tranquilo – content.js
- * Versión 0.3.1 (injection amplia + filtro por dominio + logs de acciones)
+ * Versión 0.3.2 (MV3 iframes + host filter + auto-open comments + auto-ON en iframes)
  */
 (() => {
   'use strict';
 
-  const VERSION = '0.3.1';
+  const VERSION = '0.3.2';
   const IS_TOP = (() => { try { return window.top === window; } catch { return false; } })();
 
-  // Solo actuamos en estos hosts (pero el manifest permite inyectar en todos los iframes)
+  // Permitimos inyección amplia pero solo corremos en estos hosts:
   const ALLOW_HOST = /(?:^|\.)jpost\.com$|(?:^|\.)spot\.im$|(?:^|\.)openweb\./i;
   const host = location.hostname || '';
-  if (!ALLOW_HOST.test(host)) return; // inyectado, pero no corremos
+  if (!ALLOW_HOST.test(host)) return;
 
   try { Object.defineProperty(window, '__LT_VERSION', { value: VERSION, configurable: true }); } catch {}
   try { document.documentElement.setAttribute('data-lt-version', VERSION); } catch {}
@@ -24,7 +24,7 @@
     running: false
   };
 
-  // Shadow hook
+  // Hook ligero para shadow DOM
   try {
     if (Element?.prototype?.attachShadow) {
       const _attach = Element.prototype.attachShadow;
@@ -36,7 +36,7 @@
     }
   } catch {}
 
-  // Estilos base
+  // Estilos para des-truncar
   function injectStyles(){
     if (document.getElementById('lt-style')) return;
     const style = document.createElement('style');
@@ -54,7 +54,7 @@
     document.documentElement.appendChild(style);
   }
 
-  // Botón sólo en top
+  // Botón (solo en top)
   function injectButton(){
     if (!IS_TOP) return;
     const old = document.getElementById('lt-control'); if (old) old.remove();
@@ -79,7 +79,7 @@
     (document.body || document.documentElement).appendChild(btn);
   }
 
-  // Heurísticas
+  // Heurísticas comunes
   const TEXT_PATTERNS = [
     /ver\s*m[aá]s|mostrar\s*m[aá]s|desplegar|ampliar/i,
     /see\s*more|show\s*more|expand|more\s*repl(y|ies)?/i,
@@ -88,6 +88,20 @@
   ];
 
   function isVisible(el){ const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
+
+  // Abre el módulo de comentarios (tabs/botones) en páginas top (JPost)
+  function openCommentsModuleOnce(doc = document){
+    let did = 0;
+    const qs = (sel)=> Array.from(doc.querySelectorAll(sel));
+    qs('a[href*="#comments"], [data-qa*="comment" i], [data-test*="comment" i], [aria-controls*="comment" i], button, a')
+      .forEach(el=>{
+        const t=(el.innerText||el.textContent||'').toLowerCase();
+        if (/comments|open\s*comments|view\s*comments|show\s*comments/.test(t)){
+          try { el.click(); did++; } catch {}
+        }
+      });
+    return did;
+  }
 
   function expandOnceInRoot(root){
     if (!root) return 0;
@@ -98,16 +112,7 @@
     const clicked = new Set();
     const tryClick = (el) => { if (!clicked.has(el)) { clicked.add(el); try { el.click(); actions++; } catch {} } };
 
-    // 0) En top (JPost), abrir el módulo de comentarios si está colapsado
-    if (IS_TOP) {
-      qsa('[data-test*="comment" i], [data-qa*="comment" i], [aria-controls*="comment" i], [href*="#comments"]').forEach(tryClick);
-      qsa('button, a').forEach((el)=>{
-        const t = (el.innerText || el.textContent || '').toLowerCase();
-        if (/comments|open\s*comments|view\s*comments|show\s*comments/.test(t)) tryClick(el);
-      });
-    }
-
-    // 1) por texto (cota)
+    // 1) por texto (cota de 600)
     let count = 0;
     for (const el of clickable){
       if (++count > 600) break;
@@ -115,7 +120,7 @@
       if (!txt || !isVisible(el)) continue;
       if (TEXT_PATTERNS.some(rx => rx.test(txt))) tryClick(el);
     }
-    // 2) ARIA/semántico
+    // 2) ARIA / semántico
     qsa('[aria-expanded="false"], details:not([open]) > summary, [data-click-to-expand]').forEach(tryClick);
     // 3) “ver X respuestas”
     qsa('[data-test-id*="repl" i], [data-testid*="repl" i]').forEach(tryClick);
@@ -134,7 +139,7 @@
         actions++;
       } catch {}
     });
-    // 6) OpenWeb / Spot.IM (v10+)
+    // 6) OpenWeb / Spot.IM
     try {
       const owRoots = Array.from(qsa('[id*="openweb" i], [class*="openweb" i], [id*="spot" i], [class*="spot" i], [id*="conversation" i], [class*="conversation" i]'));
       owRoots.forEach((rw)=>{
@@ -166,6 +171,7 @@
     return actions;
   }
 
+  // Loop adaptativo + single-run
   function startPersistentExpand(btn){
     if (STATE.running) { console.info('[LT] loop already running; ignoring'); return; }
     STATE.running = true;
@@ -177,6 +183,7 @@
     console.info('[LT] persistent loop starting');
 
     const loop = () => {
+      if (IS_TOP) openCommentsModuleOnce(); // asegura montar el widget
       const actions = expandEverywhere();
       console.info(`[LT] tick on ${host} (${IS_TOP ? 'top' : 'iframe'}): actions=${actions}`);
       const delay = actions > 0 ? 900 : 4000;
@@ -194,12 +201,13 @@
     }
   }
 
-  // Arranque: en iframes auto-ON; en top dejo botón
+  // Arranque: auto-ON en iframes; en top dejo botón + boot corto
   (function boot(){
     injectStyles();
     if (!IS_TOP) { startPersistentExpand(null); return; }
     let ticks = 0;
     const t = setInterval(()=>{
+      openCommentsModuleOnce();
       const acts = expandEverywhere();
       console.info(`[LT] boot tick actions=${acts}`);
       if (++ticks >= 5 || acts === 0) clearInterval(t);
