@@ -1,15 +1,26 @@
 {
   "manifest_version": 3,
   "name": "Leer Tranquilo",
-  "version": "0.1.0",
-  "description": "A reading agent that expands all hidden comments and freezes the section to prevent reloads or reordering.",
-  "permissions": ["scripting", "activeTab"],
-  "host_permissions": ["<all_urls>"],
+  "version": "0.2.9",
+  "description": "Expande y 'congela' comentarios en páginas con OpenWeb/Spot.IM.",
+  "host_permissions": [
+    "*://www.jpost.com/*",
+    "*://*.jpost.com/*",
+    "*://*.spot.im/*",
+    "*://*.openweb.com/*"
+  ],
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
+      "matches": [
+        "*://www.jpost.com/*",
+        "*://*.jpost.com/*",
+        "*://*.spot.im/*",
+        "*://*.openweb.com/*"
+      ],
+      "js": ["content.js"],   // <-- sin 'src/' porque ahora el manifest está dentro de src
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
     }
   ]
 }

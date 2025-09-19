@@ -1,13 +1,13 @@
 /*
  * Leer Tranquilo – content.js
- * Versión 0.2.8 (perf + OpenWeb/Spot.IM heuristics)
+ * Versión 0.2.9 (iframe-aware + single-run + heurísticas OpenWeb)
  */
 
 (() => {
   'use strict';
 
   // ====== VERSION ======
-  const VERSION = '0.2.8';
+  const VERSION = '0.2.9';
   try { Object.defineProperty(window, '__LT_VERSION', { value: VERSION, configurable: true }); } catch (e) {}
   try { document.documentElement.setAttribute('data-lt-version', VERSION); } catch (e) {}
   try { console.info('[LT] content loaded v' + VERSION); } catch (e) {}
@@ -16,7 +16,8 @@
   const STATE = {
     timerId: null,        // setTimeout-based adaptive loop
     observer: null,       // local MutationObserver
-    shadowRoots: new Set()
+    shadowRoots: new Set(),
+    running: false        // avoid duplicate loops
   };
 
   // ====== SHADOW DOM HOOK (suave) ======
@@ -75,6 +76,7 @@
       startPersistentExpand(btn);
     };
 
+    // Varias fases/eventos para esquivar interceptores del sitio
     btn.addEventListener('pointerdown', handler, true);
     btn.addEventListener('click', handler, true);
     btn.addEventListener('mousedown', handler, true);
@@ -105,10 +107,10 @@
     const clicked = new Set();
     const tryClick = (el) => { if (!clicked.has(el)) { clicked.add(el); try { el.click(); actions++; } catch (e) {} } };
 
-    // 1) por texto
+    // 1) por texto (cota para no penalizar páginas muy pesadas)
     let count = 0;
     for (const el of clickable){
-      if (++count > 600) break; // cota para no penalizar páginas muy pesadas
+      if (++count > 600) break;
       const txt = (el.innerText || el.textContent || '').trim();
       if (!txt) continue; if (!isVisible(el)) continue;
       if (TEXT_PATTERNS.some(rx => rx.test(txt))) tryClick(el);
@@ -176,12 +178,21 @@
     return actions;
   }
 
-  // ====== PERSISTENT MODE (bucle adaptativo) ======
+  // ====== PERSISTENT MODE (bucle adaptativo, single-run) ======
   function startPersistentExpand(btn){
+    if (STATE.running) {
+      try { console.info('[LT] loop already running; ignoring'); } catch {}
+      return;
+    }
+    STATE.running = true;
+
     try { if (STATE.timerId) clearTimeout(STATE.timerId); } catch (e) {}
     try { if (STATE.observer) STATE.observer.disconnect(); } catch (e) {}
 
-    if (btn) { btn.textContent = `Expand & Freeze · v${VERSION} · ON`; }
+    if (btn) {
+      btn.textContent = `Expand & Freeze · v${VERSION} · ON`;
+      btn.disabled = true; btn.style.opacity = '0.85'; btn.style.cursor = 'default';
+    }
 
     try { console.info('[LT] persistent loop starting'); } catch {}
 
@@ -191,7 +202,7 @@
       STATE.timerId = setTimeout(loop, delay);
     };
 
-    loop();
+    loop(); // primer tick inmediato
 
     if ('MutationObserver' in window){
       STATE.observer = new MutationObserver((muts)=>{
@@ -232,5 +243,4 @@
   } catch {}
 
   try { window.__LT_toggle = () => { const b = document.getElementById('lt-control'); startPersistentExpand(b || null); return 'LT: started'; }; } catch {}
-
 })();
