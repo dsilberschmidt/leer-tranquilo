@@ -1,13 +1,12 @@
 // Leer Tranquilo – content.js
-// v0.3.10 (hotfix: expandir en JPost con heurísticas y click seguro)
+// v0.3.11 (hotfix: cubrir "Show more comments" y click más robusto)
 
 (() => {
-  const VERSION = "0.3.10";
+  const VERSION = "0.3.11";
   document.documentElement.setAttribute("data-lt-version", VERSION);
   const where = window.top === window ? "top" : "iframe";
   console.log(`[LT] content loaded v${VERSION} on ${location.hostname} (${where})`);
 
-  // Botón de control
   function ensureControl() {
     if (document.getElementById("lt-control")) return;
     const btn = document.createElement("button");
@@ -41,7 +40,7 @@
     }
     console.log("[LT] persistent loop starting");
     const tick = (boot = false) => {
-      const n = (window.ltDom && window.ltDom.expandAll) ? window.ltDom.expandAll(30) : 0;
+      const n = (window.ltDom && window.ltDom.expandAll) ? window.ltDom.expandAll(40) : 0;
       console.log(`[LT] tick on ${location.hostname} (${where}): actions=${n}`);
       if (boot) console.log(`[LT] boot tick actions=${n}`);
     };
@@ -49,17 +48,16 @@
     loop = setInterval(tick, 1200);
   }
 
-  // Panic: tecla P -> expandir una vez
+  // Panic: tecla P -> expandir una vez fuerte
   document.addEventListener("keydown", (e) => {
     if (e.key.toLowerCase() === "p" && window.ltDom?.expandAll) {
       console.log("[LT] panic expand triggered");
-      window.ltDom.expandAll(60);
+      window.ltDom.expandAll(80);
     }
   });
 
   try {
     ensureControl();
-    // Autostart sólo después del primer click del usuario en la página
     const priming = () => {
       document.removeEventListener("click", priming, true);
       startPersistentExpand();
