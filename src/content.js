@@ -1,13 +1,13 @@
 /*
  * Leer Tranquilo – content.js
- * Versión 0.2.7 (perf + OpenWeb/Spot.IM heuristics)
+ * Versión 0.2.8 (perf + OpenWeb/Spot.IM heuristics)
  */
 
 (() => {
   'use strict';
 
   // ====== VERSION ======
-  const VERSION = '0.2.7';
+  const VERSION = '0.2.8';
   try { Object.defineProperty(window, '__LT_VERSION', { value: VERSION, configurable: true }); } catch (e) {}
   try { document.documentElement.setAttribute('data-lt-version', VERSION); } catch (e) {}
   try { console.info('[LT] content loaded v' + VERSION); } catch (e) {}
@@ -69,10 +69,16 @@
       boxShadow: '0 4px 14px rgba(0,0,0,.25)', userSelect: 'none'
     });
 
-    btn.addEventListener('click', (e) => {
-      try { e.preventDefault(); e.stopPropagation(); } catch (err) {}
+    const handler = (e) => {
+      try { e.preventDefault(); e.stopPropagation(); if (e.stopImmediatePropagation) e.stopImmediatePropagation(); } catch (err) {}
+      try { console.info('[LT] click -> startPersistentExpand'); } catch {}
       startPersistentExpand(btn);
-    }, true);
+    };
+
+    btn.addEventListener('pointerdown', handler, true);
+    btn.addEventListener('click', handler, true);
+    btn.addEventListener('mousedown', handler, true);
+    btn.addEventListener('pointerup', (e)=>{ try { e.preventDefault(); e.stopPropagation(); } catch {} }, true);
 
     (document.body || document.documentElement).appendChild(btn);
   }
@@ -177,13 +183,15 @@
 
     if (btn) { btn.textContent = `Expand & Freeze · v${VERSION} · ON`; }
 
+    try { console.info('[LT] persistent loop starting'); } catch {}
+
     const loop = () => {
       const actions = expandEverywhere();
       const delay = actions > 0 ? 900 : 4000; // agresivo si hay trabajo; suave si no
       STATE.timerId = setTimeout(loop, delay);
     };
 
-    loop(); // primer tick inmediato
+    loop();
 
     if ('MutationObserver' in window){
       STATE.observer = new MutationObserver((muts)=>{
@@ -209,4 +217,20 @@
 
   // UI
   injectButton();
+
+  // Fallbacks de activación
+  try {
+    addEventListener('keydown', (e)=>{
+      try {
+        if (e.altKey && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
+          e.preventDefault(); e.stopPropagation();
+          const b = document.getElementById('lt-control');
+          startPersistentExpand(b || null);
+        }
+      } catch {}
+    }, true);
+  } catch {}
+
+  try { window.__LT_toggle = () => { const b = document.getElementById('lt-control'); startPersistentExpand(b || null); return 'LT: started'; }; } catch {}
+
 })();
