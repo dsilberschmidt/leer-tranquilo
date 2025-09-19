@@ -1,16 +1,21 @@
 /*
  * Leer Tranquilo – content.js
- * Versión 0.3.2 (MV3 iframes + host filter + auto-open comments + auto-ON en iframes)
+ * Versión 0.3.3
+ * - All frames + host_permissions (MV3)
+ * - Botón solo en top; auto-ON en iframes
+ * - Apertura del módulo de comentarios
+ * - Deep Shadow DOM traversal + heurísticas OpenWeb/Spot.IM
+ * - “Jiggle” de scroll/hover para disparar lazy-loads
  */
 (() => {
   'use strict';
 
-  const VERSION = '0.3.2';
+  const VERSION = '0.3.3';
   const IS_TOP = (() => { try { return window.top === window; } catch { return false; } })();
-
-  // Permitimos inyección amplia pero solo corremos en estos hosts:
-  const ALLOW_HOST = /(?:^|\.)jpost\.com$|(?:^|\.)spot\.im$|(?:^|\.)openweb\./i;
   const host = location.hostname || '';
+
+  // Permitimos correr solo en estos hosts (el iframe actual reporta www.jpost.com)
+  const ALLOW_HOST = /(?:^|\.)jpost\.com$|(?:^|\.)spot\.im$|(?:^|\.)openweb\./i;
   if (!ALLOW_HOST.test(host)) return;
 
   try { Object.defineProperty(window, '__LT_VERSION', { value: VERSION, configurable: true }); } catch {}
@@ -21,10 +26,11 @@
     timerId: null,
     observer: null,
     shadowRoots: new Set(),
-    running: false
+    running: false,
+    lastActionTs: 0
   };
 
-  // Hook ligero para shadow DOM
+  // ===== Shadow DOM hook + deep traversal =====
   try {
     if (Element?.prototype?.attachShadow) {
       const _attach = Element.prototype.attachShadow;
@@ -36,7 +42,47 @@
     }
   } catch {}
 
-  // Estilos para des-truncar
+  function* deepNodes(root) {
+    if (!root) return;
+    const stack = [root];
+    const seen = new Set();
+    while (stack.length) {
+      const node = stack.pop();
+      if (!node || seen.has(node)) continue;
+      seen.add(node);
+
+      yield node;
+
+      // Shadow root
+      const sr = node.shadowRoot || (node instanceof ShadowRoot ? node : null);
+      if (sr) stack.push(sr);
+
+      // Children
+      if (node.children && node.children.length) {
+        for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]);
+      }
+
+      // Iframes same-origin
+      if (node.tagName === 'IFRAME') {
+        try {
+          if (node.contentDocument) stack.push(node.contentDocument);
+          if (node.contentDocument?.documentElement) stack.push(node.contentDocument.documentElement);
+        } catch {}
+      }
+    }
+  }
+
+  function qsaDeep(root, selector) {
+    const out = [];
+    for (const n of deepNodes(root)) {
+      try {
+        if (n.querySelectorAll) n.querySelectorAll(selector).forEach(el => out.push(el));
+      } catch {}
+    }
+    return out;
+  }
+
+  // ===== Estilos para des-truncar =====
   function injectStyles(){
     if (document.getElementById('lt-style')) return;
     const style = document.createElement('style');
@@ -45,7 +91,7 @@
       .comments, .comment, [data-testid*="comment" i], [aria-label*="comment" i] {
         max-height: none !important; overflow: visible !important;
       }
-      [class*="truncate" i], [class*="collapsed" i] {
+      [class*="truncate" i], [class*="collapsed" i], [class*="clamp" i] {
         -webkit-line-clamp: unset !important; line-clamp: unset !important;
         max-height: none !important; overflow: visible !important;
       }
@@ -54,7 +100,7 @@
     document.documentElement.appendChild(style);
   }
 
-  // Botón (solo en top)
+  // ===== Botón (solo en top) =====
   function injectButton(){
     if (!IS_TOP) return;
     const old = document.getElementById('lt-control'); if (old) old.remove();
@@ -63,7 +109,7 @@
     btn.textContent = `Expand & Freeze · v${VERSION}`;
     btn.title = `Leer Tranquilo ${VERSION} — expandir y congelar comentarios`;
     Object.assign(btn.style, {
-      position: 'fixed', inset: 'auto 16px 16px auto', zIndex: 2147483647,
+      position: 'fixed', right: '16px', bottom: '16px', zIndex: 2147483647,
       padding: '10px 12px', background: '#6200ee', color: '#fff', border: 'none',
       borderRadius: '10px', cursor: 'pointer', fontSize: '13px', pointerEvents: 'auto',
       boxShadow: '0 4px 14px rgba(0,0,0,.25)', userSelect: 'none'
@@ -79,7 +125,7 @@
     (document.body || document.documentElement).appendChild(btn);
   }
 
-  // Heurísticas comunes
+  // ===== Heurísticas =====
   const TEXT_PATTERNS = [
     /ver\s*m[aá]s|mostrar\s*m[aá]s|desplegar|ampliar/i,
     /see\s*more|show\s*more|expand|more\s*repl(y|ies)?/i,
@@ -87,50 +133,50 @@
     /read\s*more|continue\s*reading/i
   ];
 
-  function isVisible(el){ const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }
+  function isVisible(el){ try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch { return false; } }
 
-  // Abre el módulo de comentarios (tabs/botones) en páginas top (JPost)
+  function clickHard(el){
+    try {
+      const evs = ['pointerdown','mousedown','click'];
+      evs.forEach(type => el.dispatchEvent(new MouseEvent(type, {bubbles:true,cancelable:true,view:window})));
+      return true;
+    } catch { return false; }
+  }
+
+  function hover(el){
+    try { el.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, cancelable:true, view:window})); } catch {}
+  }
+
+  function jiggleScroll(target = document){
+    try {
+      const y = Math.max(0, (typeof scrollY === 'number' ? scrollY : 0) + 1);
+      target.defaultView?.scrollTo?.(0, y);
+      target.defaultView?.scrollTo?.(0, y - 1);
+    } catch {}
+  }
+
+  // Abre el módulo de comentarios en top
   function openCommentsModuleOnce(doc = document){
     let did = 0;
-    const qs = (sel)=> Array.from(doc.querySelectorAll(sel));
-    qs('a[href*="#comments"], [data-qa*="comment" i], [data-test*="comment" i], [aria-controls*="comment" i], button, a')
-      .forEach(el=>{
-        const t=(el.innerText||el.textContent||'').toLowerCase();
-        if (/comments|open\s*comments|view\s*comments|show\s*comments/.test(t)){
-          try { el.click(); did++; } catch {}
-        }
-      });
+    const candidates = qsaDeep(doc, 'a[href*="#comments"], [data-qa*="comment" i], [data-test*="comment" i], [aria-controls*="comment" i], button, a');
+    for (const el of candidates) {
+      const t=(el.innerText||el.textContent||'').toLowerCase();
+      if (/comments|open\s*comments|view\s*comments|show\s*comments|join\s*the\s*discussion/.test(t)){
+        if (isVisible(el)) { clickHard(el); did++; }
+      }
+    }
     return did;
   }
 
+  // ===== Expand logic por raíz =====
   function expandOnceInRoot(root){
     if (!root) return 0;
     let actions = 0;
-    const qsa = root.querySelectorAll ? root.querySelectorAll.bind(root) : () => [];
 
-    const clickable = qsa('button, a, summary, div, span, [role="button"], [tabindex]');
-    const clicked = new Set();
-    const tryClick = (el) => { if (!clicked.has(el)) { clicked.add(el); try { el.click(); actions++; } catch {} } };
-
-    // 1) por texto (cota de 600)
-    let count = 0;
-    for (const el of clickable){
-      if (++count > 600) break;
-      const txt = (el.innerText || el.textContent || '').trim();
-      if (!txt || !isVisible(el)) continue;
-      if (TEXT_PATTERNS.some(rx => rx.test(txt))) tryClick(el);
-    }
-    // 2) ARIA / semántico
-    qsa('[aria-expanded="false"], details:not([open]) > summary, [data-click-to-expand]').forEach(tryClick);
-    // 3) “ver X respuestas”
-    qsa('[data-test-id*="repl" i], [data-testid*="repl" i]').forEach(tryClick);
-    // 4) inputs de disclosure
-    qsa('input[type="checkbox"], input[type="radio"]').forEach((el)=>{
-      if (!el.checked) { try { el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); actions++; } catch {} }
-    });
-    // 5) quitar truncados/clamps
-    qsa('[class*="collapsed" i], [class*="truncate" i], [style*="line-clamp" i], [style*="-webkit-line-clamp" i]').forEach((el)=>{
+    // 0) Quitar truncados genéricos visibles
+    for (const el of qsaDeep(root, '[class*="collapsed" i], [class*="truncate" i], [style*="line-clamp" i], [style*="-webkit-line-clamp" i]')) {
       try {
+        if (!isVisible(el)) continue;
         el.classList.remove('collapsed');
         el.style.maxHeight = 'none';
         el.style.webkitLineClamp = 'unset';
@@ -138,27 +184,85 @@
         el.style.overflow = 'visible';
         actions++;
       } catch {}
-    });
-    // 6) OpenWeb / Spot.IM
-    try {
-      const owRoots = Array.from(qsa('[id*="openweb" i], [class*="openweb" i], [id*="spot" i], [class*="spot" i], [id*="conversation" i], [class*="conversation" i]'));
-      owRoots.forEach((rw)=>{
-        rw.querySelectorAll('button, a, [role="button"], .ow-button, .ow-load-more').forEach((b)=>{
-          const t = (b.innerText || b.textContent || '').toLowerCase();
-          if (/show\s*more|load\s*more|more\s*repl|view\s*more|see\s*more|mostrar|ver\s*m[aá]s/.test(t)) tryClick(b);
-        });
-        rw.querySelectorAll('[data-qa*="see-more" i], [data-test*="see-more" i], [data-testid*="showMore" i], [data-action*="expand" i]').forEach(tryClick);
-        rw.querySelectorAll('[class*="trunc" i], [class*="collapsed" i], [class*="clamp" i]').forEach((el)=>{
+    }
+
+    // 1) Clicks por texto
+    {
+      let count = 0;
+      const clickable = qsaDeep(root, 'button, a, summary, div, span, [role="button"], [tabindex]');
+      const clicked = new Set();
+      const tryClick = (el) => { if (!clicked.has(el)) { clicked.add(el); if (isVisible(el)) { clickHard(el); actions++; } } };
+
+      for (const el of clickable){
+        if (++count > 1200) break;
+        const txt = (el.innerText || el.textContent || '').trim();
+        if (!txt) continue;
+        if (TEXT_PATTERNS.some(rx => rx.test(txt))) tryClick(el);
+      }
+
+      // 2) ARIA
+      qsaDeep(root, '[aria-expanded="false"], details:not([open]) > summary, [data-click-to-expand]').forEach(tryClick);
+
+      // 3) “ver X respuestas”
+      qsaDeep(root, '[data-test-id*="repl" i], [data-testid*="repl" i], [data-qa*="repl" i]').forEach(tryClick);
+
+      // 4) Inputs de disclosure
+      qsaDeep(root, 'input[type="checkbox"], input[type="radio"]').forEach((el)=>{
+        try {
+          if (!el.checked && isVisible(el)) {
+            el.checked = true;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            actions++;
+          }
+        } catch {}
+      });
+    }
+
+    // 5) OpenWeb/Spot.IM específicos (clases y data-* más frecuentes)
+    {
+      const roots = qsaDeep(root, `
+        [id*="openweb" i],
+        [class*="openweb" i],
+        [id*="spot" i],
+        [class*="spot" i],
+        [id*="conversation" i],
+        [class*="conversation" i],
+        ow-conversation, ow-comments, ow-comment, ow-thread
+      `);
+
+      const tryClick = (el)=>{ if (isVisible(el)) { clickHard(el); actions++; } };
+
+      roots.forEach(rw=>{
+        // load more / see more replies
+        qsaDeep(rw, `
+          .ow-button, .ow-load-more, .ow-see-more, .ow-expand,
+          [data-action*="expand" i], [data-testid*="showmore" i], [data-qa*="see-more" i],
+          button[aria-label*="more" i], button[aria-label*="repl" i], a[aria-label*="more" i]
+        `).forEach(tryClick);
+
+        // toggles populares
+        qsaDeep(rw, `
+          [class*="more-repl" i], [class*="more-repl" i] button, [class*="show-more" i], [class*="load-more" i]
+        `).forEach(tryClick);
+
+        // quitar clamps locales
+        qsaDeep(rw, '[class*="trunc" i], [class*="collapsed" i], [class*="clamp" i]').forEach(el=>{
           try { el.style.webkitLineClamp = 'unset'; el.style.lineClamp = 'unset'; el.style.maxHeight = 'none'; el.style.overflow = 'visible'; actions++; } catch {}
         });
+
+        // hover sobre contenedores que lazy-cargan respuestas
+        qsaDeep(rw, '[class*="repl" i], [class*="thread" i], [role="listitem"]').forEach(hover);
       });
-    } catch {}
+    }
+
+    // 6) Nudge de scroll para disparar observers/lazy
+    jiggleScroll(root.ownerDocument || document);
 
     return actions;
   }
 
   function allRoots(){
-    const roots = [document];
+    const roots = [document, document.documentElement, document.body].filter(Boolean);
     try { document.querySelectorAll('iframe').forEach((f)=>{ try { if (f.contentDocument) roots.push(f.contentDocument); } catch {} }); } catch {}
     try { STATE.shadowRoots.forEach((r)=> roots.push(r)); } catch {}
     return roots;
@@ -168,10 +272,11 @@
     injectStyles();
     let actions = 0;
     for (const r of allRoots()) actions += expandOnceInRoot(r) || 0;
+    if (actions) STATE.lastActionTs = Date.now();
     return actions;
   }
 
-  // Loop adaptativo + single-run
+  // ===== Loop =====
   function startPersistentExpand(btn){
     if (STATE.running) { console.info('[LT] loop already running; ignoring'); return; }
     STATE.running = true;
@@ -183,35 +288,39 @@
     console.info('[LT] persistent loop starting');
 
     const loop = () => {
-      if (IS_TOP) openCommentsModuleOnce(); // asegura montar el widget
+      if (IS_TOP) openCommentsModuleOnce(); // montar si está colapsado
       const actions = expandEverywhere();
       console.info(`[LT] tick on ${host} (${IS_TOP ? 'top' : 'iframe'}): actions=${actions}`);
-      const delay = actions > 0 ? 900 : 4000;
+      const recent = Date.now() - STATE.lastActionTs;
+      const delay = actions > 0 ? 800 : (recent < 6000 ? 1200 : 4000);
       STATE.timerId = setTimeout(loop, delay);
     };
     loop();
 
     if ('MutationObserver' in window){
       STATE.observer = new MutationObserver((muts)=>{
+        let localActs = 0;
         for (const m of muts){
-          if (m.addedNodes?.length) m.addedNodes.forEach((n)=>{ if (n?.nodeType === 1) expandOnceInRoot(n); });
+          if (m.addedNodes?.length) m.addedNodes.forEach((n)=>{ if (n?.nodeType === 1) localActs += expandOnceInRoot(n) || 0; });
         }
+        if (localActs) console.info(`[LT] boot tick actions=${localActs}`);
       });
       try { STATE.observer.observe(document.documentElement, { childList: true, subtree: true }); } catch {}
     }
   }
 
-  // Arranque: auto-ON en iframes; en top dejo botón + boot corto
+  // ===== Boot =====
   (function boot(){
     injectStyles();
     if (!IS_TOP) { startPersistentExpand(null); return; }
+    // Boot corto que ayuda a montar el widget
     let ticks = 0;
     const t = setInterval(()=>{
       openCommentsModuleOnce();
       const acts = expandEverywhere();
       console.info(`[LT] boot tick actions=${acts}`);
-      if (++ticks >= 5 || acts === 0) clearInterval(t);
-    }, 800);
+      if (++ticks >= 6 || acts === 0) clearInterval(t);
+    }, 700);
   })();
 
   injectButton();
