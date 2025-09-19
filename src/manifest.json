@@ -1,17 +1,11 @@
-
 {
   "manifest_version": 3,
   "name": "Leer Tranquilo",
-  "version": "0.3.0",
-  "description": "Expande y “congela” comentarios en páginas con OpenWeb/Spot.IM.",
+  "version": "0.3.1",
+  "description": "Expande y “congela” comentarios (OpenWeb/Spot.IM, etc.).",
   "content_scripts": [
     {
-      "matches": [
-        "*://www.jpost.com/*",
-        "*://*.jpost.com/*",
-        "*://*.spot.im/*",
-        "*://*.openweb.com/*"
-      ],
+      "matches": ["<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_idle",
       "all_frames": true,
