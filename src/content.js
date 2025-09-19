@@ -1,63 +1,71 @@
-// content.js – Leer Tranquilo
-// v0.3.9
+// Leer Tranquilo – content.js
+// v0.3.10 (hotfix: expandir en JPost con heurísticas y click seguro)
 
 (() => {
-  const VERSION = "0.3.9";
-
-  // Marcar versión en <html>
+  const VERSION = "0.3.10";
   document.documentElement.setAttribute("data-lt-version", VERSION);
-  console.log(`[LT] content loaded v${VERSION} on ${location.hostname} (${window.top === window ? "top" : "iframe"})`);
+  const where = window.top === window ? "top" : "iframe";
+  console.log(`[LT] content loaded v${VERSION} on ${location.hostname} (${where})`);
 
-  // Botón flotante
-  if (!document.getElementById("lt-control")) {
+  // Botón de control
+  function ensureControl() {
+    if (document.getElementById("lt-control")) return;
     const btn = document.createElement("button");
     btn.id = "lt-control";
     btn.textContent = `LT • v${VERSION}`;
     Object.assign(btn.style, {
       position: "fixed",
-      inset: "auto 16px 16px auto",
+      inset: "auto 14px 14px auto",
       zIndex: 2147483647,
       padding: "8px 12px",
-      fontSize: "14px",
-      borderRadius: "6px",
-      border: "1px solid #444",
-      background: "#000",
+      fontSize: "12px",
+      borderRadius: "8px",
+      border: "1px solid #333",
+      background: "#1f2937",
       color: "#fff",
-      cursor: "pointer"
+      cursor: "pointer",
+      opacity: "0.9",
     });
-    btn.onclick = () => {
+    btn.addEventListener("click", () => {
       console.log("[LT] click -> startPersistentExpand");
       startPersistentExpand();
-    };
-    document.body.appendChild(btn);
+    });
+    (document.body || document.documentElement).appendChild(btn);
   }
 
-  // Persistent expand
-  let loopRunning = false;
+  let loop = null;
   function startPersistentExpand() {
-    if (loopRunning) {
+    if (loop) {
       console.log("[LT] loop already running; ignoring");
       return;
     }
-    loopRunning = true;
     console.log("[LT] persistent loop starting");
-    setInterval(tick, 3000);
+    const tick = (boot = false) => {
+      const n = (window.ltDom && window.ltDom.expandAll) ? window.ltDom.expandAll(30) : 0;
+      console.log(`[LT] tick on ${location.hostname} (${where}): actions=${n}`);
+      if (boot) console.log(`[LT] boot tick actions=${n}`);
+    };
     tick(true);
+    loop = setInterval(tick, 1200);
   }
 
-  function tick(boot = false) {
-    const actions = window.ltDom.expandAll();
-    console.log(`[LT] tick on ${location.hostname} (${window.top === window ? "top" : "iframe"}): actions=${actions}`);
-    if (boot) {
-      console.log(`[LT] boot tick actions=${actions}`);
-    }
-  }
-
-  // Panic button (tecla "p")
-  document.addEventListener("keydown", (ev) => {
-    if (ev.key === "p") {
+  // Panic: tecla P -> expandir una vez
+  document.addEventListener("keydown", (e) => {
+    if (e.key.toLowerCase() === "p" && window.ltDom?.expandAll) {
       console.log("[LT] panic expand triggered");
-      window.ltDom.expandAll();
+      window.ltDom.expandAll(60);
     }
   });
+
+  try {
+    ensureControl();
+    // Autostart sólo después del primer click del usuario en la página
+    const priming = () => {
+      document.removeEventListener("click", priming, true);
+      startPersistentExpand();
+    };
+    document.addEventListener("click", priming, true);
+  } catch (e) {
+    console.warn("[LT] boot error:", e);
+  }
 })();
