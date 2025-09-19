@@ -1,12 +1,16 @@
 // Leer Tranquilo – content.js
-// v0.3.11 (hotfix: cubrir "Show more comments" y click más robusto)
+// v0.4.0 (anchor persistente; anti-reset; sin expansión automática)
 
 (() => {
-  const VERSION = "0.3.11";
-  document.documentElement.setAttribute("data-lt-version", VERSION);
+  const VERSION = "0.4.0";
   const where = window.top === window ? "top" : "iframe";
+
+  // Sello de versión para inspección rápida
+  document.documentElement.setAttribute("data-lt-version", VERSION);
+  if (!window.__LT_VERSION) window.__LT_VERSION = VERSION;
   console.log(`[LT] content loaded v${VERSION} on ${location.hostname} (${where})`);
 
+  // Botón opcional (no expandimos por defecto; queda como “panic util”)
   function ensureControl() {
     if (document.getElementById("lt-control")) return;
     const btn = document.createElement("button");
@@ -26,43 +30,60 @@
       opacity: "0.9",
     });
     btn.addEventListener("click", () => {
-      console.log("[LT] click -> startPersistentExpand");
-      startPersistentExpand();
+      console.log("[LT] click -> save+restore anchor (manual)");
+      try { window.ltDom?.saveAnchor(true); window.ltDom?.restoreAnchor(true); } catch {}
     });
     (document.body || document.documentElement).appendChild(btn);
   }
 
-  let loop = null;
-  function startPersistentExpand() {
-    if (loop) {
-      console.log("[LT] loop already running; ignoring");
-      return;
-    }
-    console.log("[LT] persistent loop starting");
-    const tick = (boot = false) => {
-      const n = (window.ltDom && window.ltDom.expandAll) ? window.ltDom.expandAll(40) : 0;
-      console.log(`[LT] tick on ${location.hostname} (${where}): actions=${n}`);
-      if (boot) console.log(`[LT] boot tick actions=${n}`);
-    };
-    tick(true);
-    loop = setInterval(tick, 1200);
-  }
-
-  // Panic: tecla P -> expandir una vez fuerte
+  // Tecla P: util rápido para forzar un ciclo de save+restore
   document.addEventListener("keydown", (e) => {
-    if (e.key.toLowerCase() === "p" && window.ltDom?.expandAll) {
-      console.log("[LT] panic expand triggered");
-      window.ltDom.expandAll(80);
+    if (e.key.toLowerCase() === "p") {
+      console.log("[LT] manual save+restore");
+      try { window.ltDom?.saveAnchor(true); window.ltDom?.restoreAnchor(true); } catch {}
     }
   });
 
   try {
     ensureControl();
-    const priming = () => {
-      document.removeEventListener("click", priming, true);
-      startPersistentExpand();
+
+    // Anti-reset básico: eliminar meta refresh si existe
+    const killMetaRefresh = () => {
+      const metas = document.querySelectorAll('meta[http-equiv="refresh" i]');
+      metas.forEach(m => m.parentNode && m.parentNode.removeChild(m));
     };
-    document.addEventListener("click", priming, true);
+    killMetaRefresh();
+
+    // Scroll restoration manual
+    try { if ("scrollRestoration" in history) history.scrollRestoration = "manual"; } catch {}
+
+    // Guardar anchor:
+    // - periódicamente mientras el usuario se desplaza/lee (con throttle)
+    // - al ocultarse la página / antes de descargar / pagehide
+    // - justo antes de posibles resets (visibilidad cambia)
+    window.ltDom?.armAnchorPersistence?.();
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") window.ltDom?.saveAnchor();
+    });
+
+    window.addEventListener("beforeunload", () => window.ltDom?.saveAnchor());
+    window.addEventListener("pagehide", () => window.ltDom?.saveAnchor());
+
+    // Restaurar anchor:
+    // - al `pageshow` (incluye bfcache)
+    // - tras grandes mutaciones del DOM
+    window.addEventListener("pageshow", () => {
+      setTimeout(() => window.ltDom?.restoreAnchor(), 60);
+      setTimeout(() => window.ltDom?.restoreAnchor(), 350); // 2º intento tras hidratar anuncios/widgets
+    }, { once: true });
+
+    // Restaurar también después de la primera interacción (cuando el sitio termina de asentar layout)
+    const onceAfterFirstClick = () => {
+      document.removeEventListener("click", onceAfterFirstClick, true);
+      setTimeout(() => window.ltDom?.restoreAnchor(), 200);
+    };
+    document.addEventListener("click", onceAfterFirstClick, true);
   } catch (e) {
     console.warn("[LT] boot error:", e);
   }
