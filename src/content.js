@@ -1,11 +1,11 @@
 // == LT Reader Helper ==
 // Version tag for quick check:
-document.documentElement.setAttribute('data-lt-version', '0.4.8');
+document.documentElement.setAttribute('data-lt-version', '0.4.9');
 
 // ---- Config (solo anclaje, sin expanders) ----
 const LT = {
   id: 'LT',
-  ver: '0.4.8',
+  ver: '0.4.9',
   anchorKey: () => `LT:anchor:${location.origin}${location.pathname}`,
   articleSelector: 'main article, article, [data-qaid="article"], .article-content, .articleBody',
   // Timings + heurísticas
@@ -20,6 +20,7 @@ const LT = {
   iframeSelector: 'iframe.spot-im-frame',
   launcherSelector: '[data-spot-im-click-id="spotim-launcher"], button[aria-controls*="spot-im-frame"], button.spot-im-launcher',
   iframeReadyHeight: 320,
+  anchorsKey: 'LT:anchors:v1'
 };
 
 const state = {
@@ -31,6 +32,7 @@ const state = {
   observedTarget: null,
   lastScrollTarget: null,
   lastLauncherClickTs: 0,
+  anchorsCache: null,
 };
 
 try {
@@ -38,6 +40,7 @@ try {
   if (stored != null) {
     LT.logPerf = stored === '1';
   }
+  loadAnchors();
 } catch (_) {
   /* ignore */
 }
@@ -68,7 +71,7 @@ const perf = {
   }
 };
 setInterval(()=>perf.summarize(), 10000);
-window.ltTogglePerfLog = enabled => {
+globalThis.ltTogglePerfLog = enabled => {
   LT.logPerf = !!enabled;
   try { localStorage.setItem('LT_LOG_PERF', enabled ? '1' : '0'); } catch (_) {}
   if (!LT.logPerf) {
@@ -89,6 +92,24 @@ function measure(label, fn) {
   const t1 = performance.now();
   perf.push(label, t1 - t0);
   return r;
+}
+
+function loadAnchors() {
+  if (state.anchorsCache) return state.anchorsCache;
+  try {
+    const raw = sessionStorage.getItem(LT.anchorsKey);
+    state.anchorsCache = raw ? JSON.parse(raw) : {};
+  } catch (_) {
+    state.anchorsCache = {};
+  }
+  return state.anchorsCache;
+}
+
+function saveAnchors() {
+  if (!state.anchorsCache) return;
+  try {
+    sessionStorage.setItem(LT.anchorsKey, JSON.stringify(state.anchorsCache));
+  } catch (_) {}
 }
 
 function triggerLauncher() {
@@ -142,6 +163,7 @@ const ltDom = {
   saveAnchor(force=false) {
     return measure('LT:saveAnchor', () => {
       const key = LT.anchorKey();
+      const anchors = loadAnchors();
       const y = window.scrollY || document.documentElement.scrollTop || 0;
       const vh = window.innerHeight || 0;
       const el = document.elementFromPoint(20, Math.min(200, Math.floor(vh*0.25)));
@@ -155,11 +177,15 @@ const ltDom = {
       }
       const wasIframeReady = !!document.querySelector(LT.iframeSelector);
       const payload = { href: location.href, scrollY: y, vh, selector, snippet, iframeOpen: wasIframeReady, ts: Date.now() };
-      if (!force && state.lastSaved && state.lastSaved.scrollY === payload.scrollY && state.lastSaved.selector === payload.selector) {
-        return state.lastSaved;
+      const prev = anchors[key];
+      if (!force && prev && prev.scrollY === payload.scrollY && prev.selector === payload.selector) {
+        state.lastSaved = prev;
+        return prev;
       }
-      sessionStorage.setItem(key, JSON.stringify(payload));
+      anchors[key] = payload;
       state.lastSaved = payload;
+      saveAnchors();
+      try { sessionStorage.setItem(key, JSON.stringify(payload)); } catch (_) {}
       return payload;
     });
   },
@@ -168,9 +194,22 @@ const ltDom = {
       const now = Date.now();
       if (!force && now - state.lastRestoreTs < LT.restoreCooldownMs) return false;
       state.lastRestoreTs = now;
-      const raw = sessionStorage.getItem(LT.anchorKey());
-      if (!raw) return false;
-      let data; try { data = JSON.parse(raw); } catch { return false; }
+      const anchors = loadAnchors();
+      let data = anchors[LT.anchorKey()];
+      if (!data) {
+        try {
+          const raw = sessionStorage.getItem(LT.anchorKey());
+          if (raw) {
+            data = JSON.parse(raw);
+            if (data) {
+              anchors[LT.anchorKey()] = data;
+              saveAnchors();
+            }
+          }
+        } catch (_) {}
+      }
+      if (!data) return false;
+      state.lastSaved = data;
       if (data.href) {
         try {
           const savedUrl = new URL(data.href);
