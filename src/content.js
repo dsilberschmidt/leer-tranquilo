@@ -1,16 +1,16 @@
 // == LT Reader Helper ==
 // Version tag for quick check:
-document.documentElement.setAttribute('data-lt-version', '0.4.4');
+document.documentElement.setAttribute('data-lt-version', '0.4.5');
 
 // ---- Config (solo anclaje, sin expanders) ----
 const LT = {
   id: 'LT',
-  ver: '0.4.4',
+  ver: '0.4.5',
   anchorKey: () => `LT:anchor:${location.origin}${location.pathname}`,
   articleSelector: 'main article, article, [data-qaid="article"], .article-content, .articleBody',
   // Timings + heurísticas
   bootDelayMs: 400,            // arranque suave post-load
-  restoreDelays: [0, 140, 420, 900],
+  restoreDelays: [0, 180, 600, 1200, 2400],
   restoreCooldownMs: 200,
   resetNodeThreshold: 6,
   resetDebounceMs: 900,
@@ -113,12 +113,14 @@ const ltDom = {
           const top = node.getBoundingClientRect().top + window.scrollY - 80;
           performScroll(top);
           state.lastSaved = data;
+          console.debug('[LT] restore via selector', data.selector, '→', top);
           return true;
         }
       }
       if (typeof data.scrollY === 'number') {
         performScroll(data.scrollY);
         state.lastSaved = data;
+        console.debug('[LT] restore via scrollY', data.scrollY);
         return true;
       }
       return false;
@@ -149,12 +151,9 @@ function cancelScheduledRestores() {
 
 function scheduleRestore(_reason='generic') {
   cancelScheduledRestores();
-  LT.restoreDelays.forEach((delay, idx) => {
+  LT.restoreDelays.forEach(delay => {
     const id = setTimeout(() => {
-      const restored = ltDom.restoreAnchor(true);
-      if (restored) {
-        cancelScheduledRestores();
-      }
+      ltDom.restoreAnchor(true);
     }, delay);
     state.restoreTimers.push(id);
   });
