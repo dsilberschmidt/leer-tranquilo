@@ -1,11 +1,11 @@
 // == LT Reader Helper ==
 // Version tag for quick check:
-document.documentElement.setAttribute('data-lt-version', '0.4.2');
+document.documentElement.setAttribute('data-lt-version', '0.4.3');
 
 // ---- Config (solo anclaje, sin expanders) ----
 const LT = {
   id: 'LT',
-  ver: '0.4.2',
+  ver: '0.4.3',
   anchorKey: () => `LT:anchor:${location.origin}${location.pathname}`,
   articleSelector: 'main article, article, [data-qaid="article"], .article-content, .articleBody',
   // Timings + heurísticas
@@ -98,13 +98,13 @@ const ltDom = {
         const node = document.querySelector(data.selector);
         if (node) {
           const top = node.getBoundingClientRect().top + window.scrollY - 80;
-          window.scrollTo({ top, behavior: 'instant' });
+          window.scrollTo({ top, behavior: 'auto' });
           state.lastSaved = data;
           return true;
         }
       }
       if (typeof data.scrollY === 'number') {
-        window.scrollTo({ top: data.scrollY, behavior: 'instant' });
+        window.scrollTo({ top: data.scrollY, behavior: 'auto' });
         state.lastSaved = data;
         return true;
       }
@@ -176,7 +176,14 @@ function watchForResets() {
 function boot() {
   measure('LT:boot', () => {
     watchForResets();
-    scheduleRestore('boot');
+    const restoredNow = ltDom.restoreAnchor(true);
+    if (!restoredNow) {
+      scheduleRestore('boot');
+    } else {
+      // programamos un segundo intento corto por si el sitio recompone
+      const id = setTimeout(() => scheduleRestore('post-boot'), LT.restoreDelays[2] || 420);
+      state.restoreTimers.push(id);
+    }
   });
 }
 
