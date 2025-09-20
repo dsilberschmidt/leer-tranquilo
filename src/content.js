@@ -8,12 +8,21 @@ const LT = {
   ver: '0.4.1',
   anchorKey: () => `LT:anchor:${location.origin}${location.pathname}`,
   articleSelector: 'main article, article, [data-qaid="article"], .article-content, .articleBody',
-  // Timings
+  // Timings + heurísticas
   bootDelayMs: 400,            // arranque suave post-load
-  tickFastMs: 350,             // 2s iniciales
-  tickSlowMs: 1500,            // luego bajamos frecuencia
-  fastPhaseMs: 2000,
-  restoreRetries: [60, 350, 800], // reintentos para Brave
+  restoreDelays: [0, 140, 420, 900],
+  restoreCooldownMs: 200,
+  resetNodeThreshold: 6,
+  resetDebounceMs: 900,
+};
+
+const state = {
+  observer: null,
+  restoreTimers: [],
+  lastRestoreTs: 0,
+  lastMutationTrigger: 0,
+  lastSaved: null,
+  observedTarget: null,
 };
 
 // ---- Telemetría muy simple (en consola) ----
@@ -60,26 +69,43 @@ const ltDom = {
         snippet = (target.textContent || '').trim().slice(0, 120);
       }
       const payload = { href: location.href, scrollY: y, vh, selector, snippet, ts: Date.now() };
+      if (!force && state.lastSaved && state.lastSaved.scrollY === payload.scrollY && state.lastSaved.selector === payload.selector) {
+        return state.lastSaved;
+      }
       sessionStorage.setItem(key, JSON.stringify(payload));
+      state.lastSaved = payload;
       return payload;
     });
   },
   restoreAnchor(force=false) {
     return measure('LT:restoreAnchor', () => {
+      const now = Date.now();
+      if (!force && now - state.lastRestoreTs < LT.restoreCooldownMs) return false;
+      state.lastRestoreTs = now;
       const raw = sessionStorage.getItem(LT.anchorKey());
       if (!raw) return false;
       let data; try { data = JSON.parse(raw); } catch { return false; }
+      if (data.href) {
+        try {
+          const savedUrl = new URL(data.href);
+          if (savedUrl.origin !== location.origin || savedUrl.pathname !== location.pathname) return false;
+        } catch (_) {
+          // ignore parsing errors, seguimos con scroll fallback
+        }
+      }
       // prioridad: selector → fallback scrollY
       if (data.selector) {
         const node = document.querySelector(data.selector);
         if (node) {
           const top = node.getBoundingClientRect().top + window.scrollY - 80;
           window.scrollTo({ top, behavior: 'instant' });
+          state.lastSaved = data;
           return true;
         }
       }
       if (typeof data.scrollY === 'number') {
         window.scrollTo({ top: data.scrollY, behavior: 'instant' });
+        state.lastSaved = data;
         return true;
       }
       return false;
@@ -102,66 +128,83 @@ const ltDom = {
 };
 window.ltDom = ltDom; // para pruebas manuales
 
-// ---- Loop mínimo (sin expanders) ----
-let loop = null;
-let startedAt = 0;
-let tickMs = LT.tickFastMs;
-let idlePaused = false;
+// ---- Restauración reactiva ----
+function cancelScheduledRestores() {
+  state.restoreTimers.forEach(id => clearTimeout(id));
+  state.restoreTimers = [];
+}
 
-function tick() {
-  if (document.hidden) return; // pausa natural
-  measure('LT:tick', () => {
-    // solo validamos que el artículo siga presente; si hubo “saltos”, reanclamos
-    const art = document.querySelector(LT.articleSelector) || document.body;
-    // medimos “costo sitio”: layout/thrash por query en árbol grande
-    measure('SITE:qSelector', () => { /* no-op, el costo es del motor */ document.body.matches?.(':scope'); });
-
-    // si el alto del documento cambió mucho, reintenta restore
-    if (performance.now() - startedAt > 800) {
-      // micro re-intento oportunista
-      ltDom.restoreAnchor(false);
-    }
+function scheduleRestore(_reason='generic') {
+  cancelScheduledRestores();
+  LT.restoreDelays.forEach((delay, idx) => {
+    const id = setTimeout(() => {
+      const restored = ltDom.restoreAnchor(true);
+      if (restored) {
+        cancelScheduledRestores();
+      }
+    }, delay);
+    state.restoreTimers.push(id);
   });
 }
 
-function startLoop() {
-  if (loop) return;
-  startedAt = performance.now();
-  let phaseTimer = setTimeout(() => { tickMs = LT.tickSlowMs; }, LT.fastPhaseMs);
-  loop = setInterval(tick, tickMs);
-  // pausa cuando no visible
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      if (!idlePaused && loop) { clearInterval(loop); loop = null; idlePaused = true; }
-      ltDom.saveAnchor();
-    } else {
-      if (!loop) { loop = setInterval(tick, tickMs); idlePaused = false; }
-      // pequeño retraso para que hidrate todo y reanclar
-      setTimeout(()=>ltDom.restoreAnchor(), 120);
+function watchForResets() {
+  const target = document.querySelector(LT.articleSelector) || document.body;
+  if (!target) return;
+  if (state.observer) state.observer.disconnect();
+  state.observer = new MutationObserver(records => {
+    let delta = 0;
+    for (const record of records) {
+      if (record.type !== 'childList') continue;
+      delta += record.addedNodes.length + record.removedNodes.length;
+      if (delta >= LT.resetNodeThreshold) break;
+    }
+    if (delta < LT.resetNodeThreshold) return;
+    const now = Date.now();
+    if (now - state.lastMutationTrigger < LT.resetDebounceMs) return;
+    state.lastMutationTrigger = now;
+    scheduleRestore('mutation');
+    if (state.observedTarget && !document.contains(state.observedTarget)) {
+      // contenedor reemplazado, volvemos a enganchar el observer
+      watchForResets();
     }
   });
+  state.observer.observe(target, { childList: true, subtree: true });
+  state.observedTarget = target;
 }
 
 // ---- Arranque suave + restauraciones programadas ----
 function boot() {
   measure('LT:boot', () => {
-    ltDom.restoreAnchor();                 // intento 1
-    LT.restoreRetries.forEach(delay => {   // reintentos
-      setTimeout(() => ltDom.restoreAnchor(), delay);
-    });
-    startLoop();
+    watchForResets();
+    scheduleRestore('boot');
   });
 }
 
 // Guardados “por las dudas”
 window.addEventListener('beforeunload', () => ltDom.saveAnchor());
-window.addEventListener('pagehide', () => ltDom.saveAnchor());
+window.addEventListener('pagehide', () => {
+  cancelScheduledRestores();
+  if (state.observer) { state.observer.disconnect(); state.observer = null; }
+  state.observedTarget = null;
+  ltDom.saveAnchor();
+});
 window.addEventListener('scroll', () => {
   // throttle simple (cada ~120ms) para no recalentar
   if (boot._scrollLock) return;
   boot._scrollLock = true;
   setTimeout(()=>{ boot._scrollLock = false; ltDom.saveAnchor(); }, 120);
 }, { passive: true });
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    ltDom.saveAnchor();
+    cancelScheduledRestores();
+  } else {
+    scheduleRestore('visible');
+  }
+});
+
+window.addEventListener('focus', () => scheduleRestore('focus'));
 
 // pageshow (bfcache) + load diferido
 window.addEventListener('pageshow', () => setTimeout(boot, LT.bootDelayMs));
