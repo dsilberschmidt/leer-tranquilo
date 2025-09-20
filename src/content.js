@@ -1,11 +1,11 @@
 // == LT Reader Helper ==
 // Version tag for quick check:
-document.documentElement.setAttribute('data-lt-version', '0.4.7');
+document.documentElement.setAttribute('data-lt-version', '0.4.8');
 
 // ---- Config (solo anclaje, sin expanders) ----
 const LT = {
   id: 'LT',
-  ver: '0.4.7',
+  ver: '0.4.8',
   anchorKey: () => `LT:anchor:${location.origin}${location.pathname}`,
   articleSelector: 'main article, article, [data-qaid="article"], .article-content, .articleBody',
   // Timings + heurísticas
@@ -17,6 +17,9 @@ const LT = {
   logPerf: false,
   selectorScrollTolerance: 150,
   lockTolerance: 100,
+  iframeSelector: 'iframe.spot-im-frame',
+  launcherSelector: '[data-spot-im-click-id="spotim-launcher"], button[aria-controls*="spot-im-frame"], button.spot-im-launcher',
+  iframeReadyHeight: 320,
 };
 
 const state = {
@@ -27,6 +30,7 @@ const state = {
   lastSaved: null,
   observedTarget: null,
   lastScrollTarget: null,
+  lastLauncherClickTs: 0,
 };
 
 try {
@@ -87,6 +91,42 @@ function measure(label, fn) {
   return r;
 }
 
+function triggerLauncher() {
+  const now = Date.now();
+  if (now - state.lastLauncherClickTs < 1200) return;
+  const launcher = document.querySelector(LT.launcherSelector);
+  if (!launcher) return;
+  state.lastLauncherClickTs = now;
+  try {
+    ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach(type => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, view: window });
+      launcher.dispatchEvent(event);
+    });
+  } catch (_) {
+    try { launcher.click?.(); } catch (_) {}
+  }
+  try { launcher.click?.(); } catch (_) {}
+  console.debug('[LT] trigger launcher');
+}
+
+function watchIframeLoad(iframe) {
+  if (!iframe) return;
+  const el = iframe;
+  if (el.dataset?.ltWatchLoad) return;
+  try { el.dataset.ltWatchLoad = '1'; } catch (_) {}
+  iframe.addEventListener('load', () => {
+    console.debug('[LT] iframe loaded');
+    scheduleRestore('iframe-load');
+  }, { once: true });
+}
+
+function iframeReady(iframe) {
+  if (!iframe) return false;
+  const h = iframe.offsetHeight || iframe.clientHeight || 0;
+  if (h < LT.iframeReadyHeight) return false;
+  return true;
+}
+
 function verifyLock(targetY) {
   state.lastScrollTarget = targetY;
   requestAnimationFrame(() => {
@@ -113,7 +153,8 @@ const ltDom = {
         selector = ltDom.getSelector(target);
         snippet = (target.textContent || '').trim().slice(0, 120);
       }
-      const payload = { href: location.href, scrollY: y, vh, selector, snippet, ts: Date.now() };
+      const wasIframeReady = !!document.querySelector(LT.iframeSelector);
+      const payload = { href: location.href, scrollY: y, vh, selector, snippet, iframeOpen: wasIframeReady, ts: Date.now() };
       if (!force && state.lastSaved && state.lastSaved.scrollY === payload.scrollY && state.lastSaved.selector === payload.selector) {
         return state.lastSaved;
       }
@@ -136,6 +177,18 @@ const ltDom = {
           if (savedUrl.origin !== location.origin || savedUrl.pathname !== location.pathname) return false;
         } catch (_) {
           // ignore parsing errors, seguimos con scroll fallback
+        }
+      }
+      const iframe = document.querySelector(LT.iframeSelector);
+      watchIframeLoad(iframe);
+      if (data.iframeOpen) {
+        if (!iframe) {
+          triggerLauncher();
+          return false;
+        }
+        if (!iframeReady(iframe)) {
+          triggerLauncher();
+          return false;
         }
       }
       // prioridad: selector → fallback scrollY
@@ -208,12 +261,30 @@ function watchForResets() {
   const target = document.querySelector(LT.articleSelector) || document.body;
   if (!target) return;
   if (state.observer) state.observer.disconnect();
+  const initialIframe = document.querySelector(LT.iframeSelector);
+  watchIframeLoad(initialIframe);
   state.observer = new MutationObserver(records => {
+    let newIframe = null;
     let delta = 0;
     for (const record of records) {
       if (record.type !== 'childList') continue;
       delta += record.addedNodes.length + record.removedNodes.length;
+      record.addedNodes.forEach(node => {
+        if (newIframe) return;
+        if (node.nodeType === 1) {
+          const element = /** @type {Element} */ (node);
+          if (element.matches?.(LT.iframeSelector)) {
+            newIframe = element;
+          } else {
+            newIframe = element.querySelector?.(LT.iframeSelector) || null;
+          }
+        }
+      });
       if (delta >= LT.resetNodeThreshold) break;
+    }
+    if (newIframe) {
+      watchIframeLoad(newIframe);
+      scheduleRestore('iframe-ready');
     }
     if (delta < LT.resetNodeThreshold) return;
     const now = Date.now();

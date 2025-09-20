@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LT Reader Helper",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "Mantiene el punto de lectura en artículos largos.",
   "permissions": [],
   "host_permissions": ["https://*/*", "http://*/*"],
