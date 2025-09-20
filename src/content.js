@@ -1,11 +1,11 @@
 // == LT Reader Helper ==
 // Version tag for quick check:
-document.documentElement.setAttribute('data-lt-version', '0.4.6');
+document.documentElement.setAttribute('data-lt-version', '0.4.7');
 
 // ---- Config (solo anclaje, sin expanders) ----
 const LT = {
   id: 'LT',
-  ver: '0.4.6',
+  ver: '0.4.7',
   anchorKey: () => `LT:anchor:${location.origin}${location.pathname}`,
   articleSelector: 'main article, article, [data-qaid="article"], .article-content, .articleBody',
   // Timings + heurísticas
@@ -15,6 +15,8 @@ const LT = {
   resetNodeThreshold: 6,
   resetDebounceMs: 900,
   logPerf: false,
+  selectorScrollTolerance: 150,
+  lockTolerance: 100,
 };
 
 const state = {
@@ -24,6 +26,7 @@ const state = {
   lastMutationTrigger: 0,
   lastSaved: null,
   observedTarget: null,
+  lastScrollTarget: null,
 };
 
 try {
@@ -67,7 +70,11 @@ window.ltTogglePerfLog = enabled => {
   if (!LT.logPerf) {
     perf.samples = [];
   }
-  console.info('[LT] perf logging', LT.logPerf ? 'ON' : 'OFF');
+  if (enabled) {
+    console.info('[LT] perf logging ON');
+  } else {
+    console.info('[LT] perf logging OFF');
+  }
 };
 
 // Helper para medir
@@ -78,6 +85,16 @@ function measure(label, fn) {
   const t1 = performance.now();
   perf.push(label, t1 - t0);
   return r;
+}
+
+function verifyLock(targetY) {
+  state.lastScrollTarget = targetY;
+  requestAnimationFrame(() => {
+    const delta = Math.abs(window.scrollY - targetY);
+    if (delta <= LT.lockTolerance) {
+      cancelScheduledRestores();
+    }
+  });
 }
 
 // ---- Anchor (guardar/restaurar) ----
@@ -124,23 +141,31 @@ const ltDom = {
       // prioridad: selector → fallback scrollY
       const performScroll = targetTop => {
         requestAnimationFrame(() => {
-          window.scrollTo({ top: Math.max(0, targetTop), behavior: 'auto' });
+          const clamped = Math.max(0, targetTop);
+          window.scrollTo({ top: clamped, behavior: 'auto' });
+          verifyLock(clamped);
         });
       };
+      let target = null;
       if (data.selector) {
         const node = document.querySelector(data.selector);
         if (node) {
           const top = node.getBoundingClientRect().top + window.scrollY - 80;
-          performScroll(top);
+          target = Math.max(0, top);
+          if (typeof data.scrollY === 'number' && Math.abs(data.scrollY - target) > LT.selectorScrollTolerance) {
+            target = data.scrollY;
+          }
+          performScroll(target);
           state.lastSaved = data;
-          console.debug('[LT] restore via selector', data.selector, '→', top);
+          console.debug('[LT] restore via selector', data.selector, '→', target);
           return true;
         }
       }
       if (typeof data.scrollY === 'number') {
-        performScroll(data.scrollY);
+        target = data.scrollY;
+        performScroll(target);
         state.lastSaved = data;
-        console.debug('[LT] restore via scrollY', data.scrollY);
+        console.debug('[LT] restore via scrollY', target);
         return true;
       }
       return false;
