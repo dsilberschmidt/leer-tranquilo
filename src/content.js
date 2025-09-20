@@ -1,11 +1,11 @@
 // == LT Reader Helper ==
 // Version tag for quick check:
-document.documentElement.setAttribute('data-lt-version', '0.4.5');
+document.documentElement.setAttribute('data-lt-version', '0.4.6');
 
 // ---- Config (solo anclaje, sin expanders) ----
 const LT = {
   id: 'LT',
-  ver: '0.4.5',
+  ver: '0.4.6',
   anchorKey: () => `LT:anchor:${location.origin}${location.pathname}`,
   articleSelector: 'main article, article, [data-qaid="article"], .article-content, .articleBody',
   // Timings + heurísticas
@@ -14,6 +14,7 @@ const LT = {
   restoreCooldownMs: 200,
   resetNodeThreshold: 6,
   resetDebounceMs: 900,
+  logPerf: false,
 };
 
 const state = {
@@ -26,6 +27,15 @@ const state = {
 };
 
 try {
+  const stored = localStorage.getItem('LT_LOG_PERF');
+  if (stored != null) {
+    LT.logPerf = stored === '1';
+  }
+} catch (_) {
+  /* ignore */
+}
+
+try {
   if ('scrollRestoration' in history) {
     history.scrollRestoration = 'manual';
   }
@@ -36,23 +46,33 @@ try {
 // ---- Telemetría muy simple (en consola) ----
 const perf = {
   samples: [],
-  push(name, dur) { this.samples.push({ t: Date.now(), name, dur }); },
+  push(name, dur) {
+    if (!LT.logPerf) return;
+    this.samples.push({ t: Date.now(), name, dur });
+  },
   summarize() {
+    if (!this.samples.length) return;
     const mine = this.samples.filter(s => /LT:/.test(s.name));
     const site = this.samples.filter(s => /SITE:/.test(s.name));
     const avg = arr => (arr.length ? (arr.reduce((a,b)=>a+b.dur,0)/arr.length).toFixed(2) : '0');
-    console.group('%cLT perf (últimos ~10s)', 'color:#09f');
-    console.log('Muestras LT:', mine.length, 'avg ms:', avg(mine));
-    console.log('Muestras sitio:', site.length, 'avg ms:', avg(site));
-    console.groupEnd();
+    console.debug('[LT] perf últimos 10s → propias:', mine.length, 'avg ms:', avg(mine), '| sitio:', site.length, 'avg ms:', avg(site));
     // limpia ventana para que no crezca
     this.samples = [];
   }
 };
 setInterval(()=>perf.summarize(), 10000);
+window.ltTogglePerfLog = enabled => {
+  LT.logPerf = !!enabled;
+  try { localStorage.setItem('LT_LOG_PERF', enabled ? '1' : '0'); } catch (_) {}
+  if (!LT.logPerf) {
+    perf.samples = [];
+  }
+  console.info('[LT] perf logging', LT.logPerf ? 'ON' : 'OFF');
+};
 
 // Helper para medir
 function measure(label, fn) {
+  if (!LT.logPerf) return fn();
   const t0 = performance.now();
   const r = fn();
   const t1 = performance.now();
