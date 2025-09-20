@@ -1,11 +1,11 @@
 // == LT Reader Helper ==
 // Version tag for quick check:
-document.documentElement.setAttribute('data-lt-version', '0.4.3');
+document.documentElement.setAttribute('data-lt-version', '0.4.4');
 
 // ---- Config (solo anclaje, sin expanders) ----
 const LT = {
   id: 'LT',
-  ver: '0.4.3',
+  ver: '0.4.4',
   anchorKey: () => `LT:anchor:${location.origin}${location.pathname}`,
   articleSelector: 'main article, article, [data-qaid="article"], .article-content, .articleBody',
   // Timings + heurísticas
@@ -24,6 +24,14 @@ const state = {
   lastSaved: null,
   observedTarget: null,
 };
+
+try {
+  if ('scrollRestoration' in history) {
+    history.scrollRestoration = 'manual';
+  }
+} catch (_) {
+  /* ignore */
+}
 
 // ---- Telemetría muy simple (en consola) ----
 const perf = {
@@ -94,17 +102,22 @@ const ltDom = {
         }
       }
       // prioridad: selector → fallback scrollY
+      const performScroll = targetTop => {
+        requestAnimationFrame(() => {
+          window.scrollTo({ top: Math.max(0, targetTop), behavior: 'auto' });
+        });
+      };
       if (data.selector) {
         const node = document.querySelector(data.selector);
         if (node) {
           const top = node.getBoundingClientRect().top + window.scrollY - 80;
-          window.scrollTo({ top, behavior: 'auto' });
+          performScroll(top);
           state.lastSaved = data;
           return true;
         }
       }
       if (typeof data.scrollY === 'number') {
-        window.scrollTo({ top: data.scrollY, behavior: 'auto' });
+        performScroll(data.scrollY);
         state.lastSaved = data;
         return true;
       }
